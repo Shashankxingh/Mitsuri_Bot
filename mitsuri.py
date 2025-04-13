@@ -60,11 +60,11 @@ def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
                 return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
 
 # === /start ===
-def start(update, context):
+def start(update: Update, context: CallbackContext):
     update.message.reply_text("Hehe~ Mitsuri yaha hai! Bolo kya haal hai?")
 
 # === .ping ===
-def ping(update, context):
+def ping(update: Update, context: CallbackContext):
     start_time = time.time()
     msg = update.message.reply_text("Measuring my heartbeat...")
     latency = int((time.time() - start_time) * 1000)
@@ -87,25 +87,25 @@ def ping(update, context):
     msg.edit_text(response)
 
 # === .on ===
-def turn_on(update, context):
+def turn_on(update: Update, context: CallbackContext):
     global is_bot_active
     if update.message.chat.id == GROUP_ID:
         is_bot_active = True
         update.message.reply_text("Mitsuri activated! Yay~ I'm here!!")
 
 # === .off ===
-def turn_off(update, context):
+def turn_off(update: Update, context: CallbackContext):
     global is_bot_active
     if update.message.chat.id == GROUP_ID:
         is_bot_active = False
         update.message.reply_text("Okayyy~ I'll be quiet now...")
 
 # === Message Handler ===
-def handle_message(update, context):
+def handle_message(update: Update, context: CallbackContext):
     global is_bot_active
 
-    # Check if the message contains text
-    if not update.message.text:
+    # Check if the update or message or text is missing
+    if not update.message or not update.message.text:
         return
 
     user_input = update.message.text.strip()
@@ -142,7 +142,7 @@ def handle_message(update, context):
 
 # === Main Application ===
 if __name__ == "__main__":
-    updater = Updater(TELEGRAM_BOT_TOKEN)
+    updater = Updater(TELEGRAM_BOT_TOKEN, use_context=True)
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
