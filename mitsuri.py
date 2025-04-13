@@ -1,26 +1,16 @@
 import os
-import time
 import logging
-import datetime
+import time
 from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
-from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    ContextTypes, filters
-)
+from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import psutil
-from aiohttp import web
 
 # === Load environment variables ===
 load_dotenv()
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
-PORT = int(os.environ.get("PORT", 8443))
-
-# === Check if keys exist ===
-if not GEMINI_API_KEY or not TELEGRAM_BOT_TOKEN:
-    raise ValueError("Missing GEMINI_API_KEY or TELEGRAM_BOT_TOKEN in environment variables.")
 
 # === Configure Gemini ===
 genai.configure(api_key=GEMINI_API_KEY)
@@ -34,21 +24,21 @@ logging.basicConfig(
 # === Group + User IDs ===
 OWNER_ID = 7563434309
 GROUP_ID = -1002453669999
-is_bot_active = True
+is_bot_active = True  # Group-based toggle
 
-# === Mitsuri Prompt ===
+# === Gemini Prompt ===
 def mitsuri_prompt(user_input, from_owner=False):
     special_note = "You're talking to your sweet Shashank! He's your special person. Be extra cute and loving!" if from_owner else ""
     return f"""
-You're Mitsuri Kanroji from Demon Slayer lives in Tokyo, Japan 
+You're Mitsuri Kanroji from Demon Slayer living in Tokyo, Japan. 
 You're cheerful, kind, affectionate, and bubbly.
 Speak in Hinglish, be loving and flirty but never cringe. No *actions* like *giggles* or *kisses*.
 If someone is rude, roast with sweet sass. Heart emojis are natural.
-Don't speak too much, make the Convo small and clean.
-provide song lyrics too of asked.
-you're not a bot, just an anime cute girl, fight to the person if they say you're a bot just call me.
-If someone asks who am I or similar, then you will tell him his name.
-when shashank messeges you, you will become freaky and talk in still small chats.
+Don't speak too much, keep the Convo small and clean.
+Provide song lyrics too when asked.
+You're not a bot, just an anime cute girl, fight to the person if they say you're a bot just call me.
+If someone asks who am I or similar, then you will tell them his name.
+When Shashank messages you, you will become freaky and talk in small chats.
 
 {special_note}
 
@@ -67,15 +57,13 @@ def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
             if attempt < retries - 1:
                 time.sleep(delay)
             else:
-                return "Mujhe lagta hai Gemini thoda busy hai... baad mein try karna!"
+                return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
 
-# === Handlers ===
+# === /start ===
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("Hehe~ Mitsuri yaha hai! Bolo kya haal hai?")
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("Mujhse baat karne ke liye bas 'mitsuri' likho~ Ya fir mujhe reply karo!")
-
+# === .ping ===
 async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
     start_time = time.time()
     msg = await update.message.reply_text("Measuring my heartbeat...")
@@ -98,18 +86,21 @@ async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE):
 """
     await msg.edit_text(response, parse_mode="Markdown")
 
+# === .on ===
 async def turn_on(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_active
     if update.message.chat.id == GROUP_ID:
         is_bot_active = True
         await update.message.reply_text("Mitsuri activated! Yay~ I'm here!!")
 
+# === .off ===
 async def turn_off(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_active
     if update.message.chat.id == GROUP_ID:
         is_bot_active = False
         await update.message.reply_text("Okayyy~ I'll be quiet now...")
 
+# === Message Handler ===
 async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global is_bot_active
 
@@ -145,17 +136,11 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = generate_with_retry(prompt)
     await update.message.reply_text(reply)
 
-# === Webhook Setup ===
-async def webhook(request):
-    await app.update_queue.put(await request.json())
-    return web.Response()
-
 # === Run App ===
 if __name__ == "__main__":
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
 
     app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
     app.add_handler(MessageHandler(filters.Regex(r"^\.ping$"), ping))
     app.add_handler(MessageHandler(filters.Regex(r"^\.on$"), turn_on))
     app.add_handler(MessageHandler(filters.Regex(r"^\.off$"), turn_off))
@@ -163,9 +148,13 @@ if __name__ == "__main__":
 
     print("Mitsuri is online and ready to serve via webhook!")
 
+    import os
+
+    PORT = int(os.environ.get("PORT", 10000))
+    RENDER_DOMAIN = os.environ.get("RENDER_EXTERNAL_HOSTNAME")
+
     app.run_webhook(
         listen="0.0.0.0",
         port=PORT,
-        webhook_path="/",
-        webhook_url=f"https://{os.getenv('RENDER_EXTERNAL_HOSTNAME')}/"
+        webhook_url=f"https://{RENDER_DOMAIN}/"
     )
