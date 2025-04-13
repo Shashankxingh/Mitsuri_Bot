@@ -1,21 +1,22 @@
-# Use the official Python image from Docker Hub
+# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
-# Set the working directory in the container
+# Set environment variables
+ENV PYTHONDONTWRITEBYTECODE 1
+ENV PYTHONUNBUFFERED 1
+
+# Create working directory
 WORKDIR /app
 
-# Copy the current directory content into the container at /app
-COPY . /app
-
 # Install dependencies
+COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Set environment variables (you can replace with your own secrets)
-ENV GEMINI_API_KEY=your-gemini-api-key
-ENV TELEGRAM_BOT_TOKEN=your-telegram-bot-token
+# Copy project files
+COPY . .
 
-# Expose port 80 (optional, only if needed for webhooks)
-EXPOSE 80
+# Expose port (Render scans for this to detect open port)
+EXPOSE 10000
 
-# Command to run the bot
+# Run the bot with polling (no need to bind to HTTP server)
 CMD ["python", "mitsuri.py"]
