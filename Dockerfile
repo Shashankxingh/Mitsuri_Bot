@@ -15,8 +15,11 @@ RUN pip install --no-cache-dir -r requirements.txt
 # Copy project files
 COPY . .
 
-# Expose port (Render scans for this to detect open port)
+# Install tini to handle multiple processes
+RUN apt-get update && apt-get install -y tini
+
+# Expose a dummy port to satisfy Render's requirement for an open port
 EXPOSE 10000
 
-# Run the bot with polling (no need to bind to HTTP server)
-CMD ["python", "mitsuri.py"]
+# Start both the dummy HTTP server and the bot (Mitsuri)
+CMD ["tini", "--", "sh", "-c", "python3 -m http.server 10000 & python3 mitsuri.py"]
