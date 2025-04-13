@@ -1,12 +1,12 @@
 import os
 import time
 import logging
-import datetime
 from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 import psutil
+from aiohttp import web
 
 # === Load environment variables ===
 load_dotenv()
@@ -25,7 +25,7 @@ logging.basicConfig(
 # === Group + User IDs ===
 OWNER_ID = 7563434309
 GROUP_ID = -1002453669999
-is_bot_active = True  # Group-based toggle
+is_bot_active = True
 
 # === Gemini Prompt ===
 def mitsuri_prompt(user_input, from_owner=False):
@@ -137,15 +137,27 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply = generate_with_retry(prompt)
     await update.message.reply_text(reply)
 
-# === Run App ===
+# === Health check for Render ===
+async def health(request):
+    return web.Response(text="Mitsuri is alive and simping~")
+
+# === Main ===
+def main():
+    telegram_app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+
+    telegram_app.add_handler(CommandHandler("start", start))
+    telegram_app.add_handler(MessageHandler(filters.Regex(r"^\.ping$"), ping))
+    telegram_app.add_handler(MessageHandler(filters.Regex(r"^\.on$"), turn_on))
+    telegram_app.add_handler(MessageHandler(filters.Regex(r"^\.off$"), turn_off))
+    telegram_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    telegram_app.run_polling(stop_signals=None)
+
+    web_app = web.Application()
+    web_app.router.add_get("/", health)
+    port = int(os.environ.get("PORT", 8080))
+    web.run_app(web_app, port=port)
+
 if __name__ == "__main__":
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
-
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(MessageHandler(filters.Regex(r"^\.ping$"), ping))
-    app.add_handler(MessageHandler(filters.Regex(r"^\.on$"), turn_on))
-    app.add_handler(MessageHandler(filters.Regex(r"^\.off$"), turn_off))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-
     print("Mitsuri is online and full of pyaar!")
-    app.run_polling()
+    main()
