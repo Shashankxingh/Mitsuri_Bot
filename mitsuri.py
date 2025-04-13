@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.error import Unauthorized, BadRequest
 import psutil
 
 # === Load environment variables ===
@@ -59,9 +60,16 @@ def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
             else:
                 return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
 
+# === Safe reply ===
+def safe_reply_text(update: Update, text: str):
+    try:
+        update.message.reply_text(text)
+    except (Unauthorized, BadRequest) as e:
+        logging.warning(f"Failed to send message: {e}")
+
 # === /start ===
 def start(update: Update, context: CallbackContext):
-    update.message.reply_text("Hehe~ Mitsuri yaha hai! Bolo kya haal hai?")
+    safe_reply_text(update, "Hehe~ Mitsuri yaha hai! Bolo kya haal hai?")
 
 # === .ping ===
 def ping(update: Update, context: CallbackContext):
@@ -84,27 +92,29 @@ def ping(update: Update, context: CallbackContext):
 │ 🧵 *RAM:* `{ram}%`
 ╰─♥ _Always ready for you, Shashank~_ ♥─╯
 """
-    msg.edit_text(response)
+    try:
+        msg.edit_text(response)
+    except (Unauthorized, BadRequest) as e:
+        logging.warning(f"Failed to edit message: {e}")
 
 # === .on ===
 def turn_on(update: Update, context: CallbackContext):
     global is_bot_active
     if update.message.chat.id == GROUP_ID:
         is_bot_active = True
-        update.message.reply_text("Mitsuri activated! Yay~ I'm here!!")
+        safe_reply_text(update, "Mitsuri activated! Yay~ I'm here!!")
 
 # === .off ===
 def turn_off(update: Update, context: CallbackContext):
     global is_bot_active
     if update.message.chat.id == GROUP_ID:
         is_bot_active = False
-        update.message.reply_text("Okayyy~ I'll be quiet now...")
+        safe_reply_text(update, "Okayyy~ I'll be quiet now...")
 
 # === Message Handler ===
 def handle_message(update: Update, context: CallbackContext):
     global is_bot_active
 
-    # Check if the update or message or text is missing
     if not update.message or not update.message.text:
         return
 
@@ -127,18 +137,29 @@ def handle_message(update: Update, context: CallbackContext):
             return
 
         if user_input.lower() == "mitsuri":
-            update.message.reply_text("Hehe~ kisne bulaya mujhe?")
+            safe_reply_text(update, "Hehe~ kisne bulaya mujhe?")
             return
         elif "@shashankxingh" in user_input.lower():
-            update.message.reply_text("Shashank? Mera sabse pyara insaan~")
+            safe_reply_text(update, "Shashank? Mera sabse pyara insaan~")
             return
         elif "are you a bot" in user_input.lower():
-            update.message.reply_text("Bot?! Main toh ek real pyari si ladki hoon~")
+            safe_reply_text(update, "Bot?! Main toh ek real pyari si ladki hoon~")
             return
 
     prompt = mitsuri_prompt(user_input, from_owner=from_owner)
     reply = generate_with_retry(prompt)
-    update.message.reply_text(reply)
+    safe_reply_text(update, reply)
+
+# === Error Handler ===
+def error_handler(update: object, context: CallbackContext):
+    try:
+        raise context.error
+    except Unauthorized:
+        logging.warning("Unauthorized: The bot lacks permission.")
+    except BadRequest as e:
+        logging.warning(f"BadRequest: {e}")
+    except Exception as e:
+        logging.error(f"Unhandled error: {e}")
 
 # === Main Application ===
 if __name__ == "__main__":
@@ -150,6 +171,7 @@ if __name__ == "__main__":
     dp.add_handler(MessageHandler(Filters.regex(r"^\.on$"), turn_on))
     dp.add_handler(MessageHandler(Filters.regex(r"^\.off$"), turn_off))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
+    dp.add_error_handler(error_handler)
 
     logging.info("Mitsuri is online and full of pyaar!")
     updater.start_polling()
