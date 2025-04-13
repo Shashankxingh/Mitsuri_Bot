@@ -1,21 +1,20 @@
-# Use official Python slim image
+# Use an official Python runtime as a base image
 FROM python:3.11-slim
 
-# Set work directory
+# Set working directory
 WORKDIR /app
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y gcc build-essential libpq-dev && rm -rf /var/lib/apt/lists/*
-
-# Install Python dependencies
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-# Copy app code
+# Copy the current directory contents into the container
 COPY . .
 
-# Expose the port (Render default is 8080)
-EXPOSE 8080
+# Install dependencies
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Run the bot with a health check (or keep the app running)
+# Expose the port your app will run on
+EXPOSE 10000
+
+# Set environment variables (Render will override with actual values)
+ENV PORT=10000
+
+# Start the bot
 CMD ["python", "mitsuri.py"]
