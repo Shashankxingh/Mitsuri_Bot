@@ -18,4 +18,4 @@ COPY . .
 EXPOSE 8080
 
 # Run the bot with a health check (or keep the app running)
-CMD ["python", "main.py"]
+CMD ["python", "mitsuri.py"]
