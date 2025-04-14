@@ -73,8 +73,13 @@ def start(update: Update, context: CallbackContext):
 
 from telegram.error import Unauthorized, BadRequest  # Add this if not already imported
 
+from telegram.error import Unauthorized, BadRequest  # if not already
+
 # === .ping ===
 def ping(update: Update, context: CallbackContext):
+    user = update.effective_user
+    first_name = user.first_name if user else "Someone"
+
     start_time = time.time()
     msg = update.message.reply_text("Measuring my heartbeat...")
     latency = int((time.time() - start_time) * 1000)
