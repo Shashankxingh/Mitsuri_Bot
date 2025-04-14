@@ -71,6 +71,8 @@ def safe_reply_text(update: Update, text: str):
 def start(update: Update, context: CallbackContext):
     safe_reply_text(update, "Hehe~ Mitsuri yaha hai! Bolo kya haal hai?")
 
+from telegram.error import Unauthorized, BadRequest  # Add this if not already imported
+
 # === .ping ===
 def ping(update: Update, context: CallbackContext):
     start_time = time.time()
@@ -92,10 +94,11 @@ def ping(update: Update, context: CallbackContext):
 │ 🧵 *RAM:* `{ram}%`
 ╰─♥ _Always ready for you, Shashank~_ ♥─╯
 """
+
     try:
-    msg.edit_text(response, parse_mode="Markdown")
-except (Unauthorized, BadRequest) as e:
-    logging.warning(f"Failed to edit message: {e}")
+        msg.edit_text(response, parse_mode="Markdown")
+    except (Unauthorized, BadRequest) as e:
+        logging.warning(f"Failed to edit message: {e}")
 
 # === .on ===
 def turn_on(update: Update, context: CallbackContext):
