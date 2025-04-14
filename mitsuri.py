@@ -121,20 +121,32 @@ def ping(update: Update, context: CallbackContext):
     except (Unauthorized, BadRequest) as e:
         logging.warning(f"Failed to edit message: {e}")
 
-# === /add (owner only) ===
+# === /add (sticker set link) ===
 def add_sticker(update: Update, context: CallbackContext):
     if update.effective_user.id != OWNER_ID:
         return
 
-    args = context.args
-    if not args:
+    if not context.args:
+        update.message.reply_text("Sticker set ka link do na~")
         return
 
-    sticker_id = args[0]
-    if sticker_id not in stickers:
-        stickers.append(sticker_id)
+    link = context.args[0]
+    if "addstickers/" not in link:
+        update.message.reply_text("Sahi link bhejo! Mujhe confuse mat karo~")
+        return
+
+    set_name = link.split("addstickers/")[-1]
+    try:
+        sticker_set = context.bot.get_sticker_set(set_name)
+        new_ids = [sticker.file_id for sticker in sticker_set.stickers if sticker.file_id not in stickers]
+        stickers.extend(new_ids)
         save_stickers(stickers)
-    msg = update.message.reply_text("Sticker added, ne~")
+        msg = update.message.reply_text(f"{len(new_ids)} naye stickers add kiye, hehe~")
+    except Exception as e:
+        logging.error(f"Sticker set error: {e}")
+        update.message.reply_text("Mujhe wo sticker set nahi mila... maybe link galat hai?")
+        return
+
     context.job_queue.run_once(lambda ctx: msg.delete(), 15)
 
 # === Handle Messages ===
