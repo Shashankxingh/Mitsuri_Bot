@@ -93,9 +93,9 @@ def ping(update: Update, context: CallbackContext):
 ╰─♥ _Always ready for you, Shashank~_ ♥─╯
 """
     try:
-        msg.edit_text(response)
-    except (Unauthorized, BadRequest) as e:
-        logging.warning(f"Failed to edit message: {e}")
+    msg.edit_text(response, parse_mode="Markdown")
+except (Unauthorized, BadRequest) as e:
+    logging.warning(f"Failed to edit message: {e}")
 
 # === .on ===
 def turn_on(update: Update, context: CallbackContext):
