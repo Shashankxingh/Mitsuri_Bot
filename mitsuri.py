@@ -92,7 +92,7 @@ def ping(update: Update, context: CallbackContext):
 │ 🔮 *API Res:* `{gen_latency}ms`
 │ 🧠 *CPU:* `{cpu}%`
 │ 🧵 *RAM:* `{ram}%`
-╰─♥ _Always ready for you, Shashank~_ ♥─╯
+╰─♥ _Always ready for you, {first_name}~_ ♥─╯
 """
 
     try:
