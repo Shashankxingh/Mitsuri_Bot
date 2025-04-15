@@ -110,12 +110,10 @@ def handle_message(update: Update, context: CallbackContext):
     chat_type = update.message.chat.type
     from_owner = user_id == OWNER_ID
 
-    # If it's not text (e.g., image, sticker, etc.)
     if not user_input:
         safe_reply_text(update, "Mujhe yeh samjh nhi aaya kuch aur batao~")
         return
 
-    # Group handling
     if chat_type in ["group", "supergroup"]:
         is_reply = (
             update.message.reply_to_message
@@ -150,7 +148,15 @@ def handle_sticker(update: Update, context: CallbackContext):
         update.message.reply_to_message
         and update.message.reply_to_message.from_user.id == context.bot.id
     ):
-        update.message.reply_text("Aww~ cute sticker hai!~")
+        update.message.reply_text("Aww~ cute sticker hai! Mujhe pasand aaya~ tumhe gale lag jaane ka mann kar raha hai~")
+
+# === Media Handler ===
+def handle_media(update: Update, context: CallbackContext):
+    if (
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    ):
+        update.message.reply_text("Hehe~ itna pyara media! Tum mujhe impress karne aaye ho kya~?")
 
 # === Error Handler ===
 def error_handler(update: object, context: CallbackContext):
@@ -171,7 +177,11 @@ if __name__ == "__main__":
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(MessageHandler(Filters.regex(r"^\.ping$"), ping))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dp.add_handler(MessageHandler(Filters.sticker | Filters.photo | Filters.video | Filters.document | Filters.voice | Filters.audio, handle_message))
+    dp.add_handler(MessageHandler(Filters.sticker, handle_sticker))
+    dp.add_handler(MessageHandler(
+        Filters.photo | Filters.video | Filters.document | Filters.voice | Filters.audio,
+        handle_media
+    ))
     dp.add_error_handler(error_handler)
 
     logging.info("Mitsuri is online and full of pyaar!")
