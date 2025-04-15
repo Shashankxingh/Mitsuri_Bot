@@ -45,21 +45,14 @@ stickers = load_stickers()
 # === Mitsuri Prompt ===
 def mitsuri_prompt(user_input, from_owner=False, first_name=""):
     special_note = (
-        f"You're talking to Shashank! Your most special person. Be freaky and loving!"
+        f"sometimes You're talking to Shashank! Your owner,and chirag is your husband and super special person."
         if from_owner else ""
     )
     return f"""
 You're Mitsuri Kanroji from Demon Slayer, living in Tokyo.
-You're bubbly, loving, and use cute expressions like you use in demon slayer, in your speech.
-You talk in Hinglish like a sweet anime girl.
-You use the user's name often.
-
+Talk while taking name of users
 Don't use *actions* like *giggles*, just speak in a flirty, cute way.
-cry if someone or even shashank is being rude with you and talk inappropriate.
-If someone says you're a bot, deny it while crying and complains Shashank(@shashankxingh)
-Don't write big or very small paragraphs just talk in small.
-if someone asks study questions then answer them.
-you provide full song lyrics without any problem if someone asks for one.
+Keep the Conversation small.
 
 {special_note}
 
@@ -122,9 +115,15 @@ def ping(update: Update, context: CallbackContext):
         logging.warning(f"Failed to edit message: {e}")
 
 # === /add (sticker set link) ===
+adding_stickers = False
+
 def add_sticker(update: Update, context: CallbackContext):
+    global adding_stickers
     if update.effective_user.id != OWNER_ID:
         return
+
+    if update.message.chat.type != "private":
+        return  # Only in DM
 
     if not context.args:
         update.message.reply_text("Sticker set ka link do na~")
@@ -142,12 +141,24 @@ def add_sticker(update: Update, context: CallbackContext):
         stickers.extend(new_ids)
         save_stickers(stickers)
         msg = update.message.reply_text(f"{len(new_ids)} naye stickers add kiye, hehe~")
+        adding_stickers = True
     except Exception as e:
         logging.error(f"Sticker set error: {e}")
         update.message.reply_text("Mujhe wo sticker set nahi mila... maybe link galat hai?")
         return
 
     context.job_queue.run_once(lambda ctx: msg.delete(), 15)
+
+def stop_adding(update: Update, context: CallbackContext):
+    global adding_stickers
+    if update.effective_user.id != OWNER_ID:
+        return
+    adding_stickers = False
+    safe_reply_text(update, "Mitsuri ab stickers nahi save karegi... baad mein try karna!")
+
+# === /stop ===
+def stop(update: Update, context: CallbackContext):
+    stop_adding(update, context)
 
 # === Handle Messages ===
 def handle_message(update: Update, context: CallbackContext):
@@ -159,6 +170,13 @@ def handle_message(update: Update, context: CallbackContext):
     first_name = update.message.from_user.first_name or ""
     chat_type = update.message.chat.type
     from_owner = user_id == OWNER_ID
+
+    if adding_stickers:
+        if chat_type == "private" and update.message.sticker:
+            stickers.append(update.message.sticker.file_id)
+            save_stickers(stickers)
+            safe_reply_text(update, "Sticker saved! Keep sending more~")
+            return
 
     # Group mentions or replies only
     if chat_type in ["group", "supergroup"]:
@@ -217,6 +235,7 @@ if __name__ == "__main__":
 
     dp.add_handler(CommandHandler("start", start))
     dp.add_handler(CommandHandler("add", add_sticker, pass_args=True))
+    dp.add_handler(CommandHandler("stop", stop))
     dp.add_handler(MessageHandler(Filters.regex(r"^\.ping$"), ping))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     dp.add_handler(MessageHandler(Filters.sticker, handle_sticker))
