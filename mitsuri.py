@@ -1,6 +1,7 @@
 import os
 import time
 import logging
+import random
 from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
@@ -25,7 +26,6 @@ logging.basicConfig(
 # === Constants ===
 OWNER_ID = 7563434309
 GROUP_ID = -1002453669999
-RATE_LIMIT_DELAY = 2  # Delay between API calls to prevent rate limit issues (in seconds)
 
 # === Mitsuri Prompt ===
 def mitsuri_prompt(user_input, from_owner=False, first_name=""):
@@ -46,7 +46,7 @@ use cute emoji
 Human ({first_name}): {user_input}
 Mitsuri:"""
 
-# === Retry-safe Gemini with Rate Limiting ===
+# === Retry-safe Gemini ===
 REQUEST_DELAY = 10
 def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
     for attempt in range(retries):
@@ -59,28 +59,8 @@ def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
                 time.sleep(delay)
             else:
                 return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
-        # Add delay to prevent rate limit exceedance
-        time.sleep(RATE_LIMIT_DELAY)
 
-# === Image Detection via Gemini 1.5 Flash ===
-def analyze_image_with_gemini(file_path, first_name):
-    """Analyze the content of the image using Gemini's capabilities."""
-    try:
-        with open(file_path, "rb") as image_file:
-            image_content = image_file.read()
-
-        # Generate prompt for Gemini to analyze image
-        prompt = f"Analyze this image and describe it in detail. Then, respond in Mitsuri's style, using cute language and emojis. The image content should be described as if Mitsuri were talking to {first_name}."
-
-        # Call Gemini API for analysis
-        response = model.generate_content(prompt, image=image_content)
-        return response.text.strip() if response.text else "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
-    
-    except Exception as e:
-        logging.error(f"Error analyzing image with Gemini: {e}")
-        return "Mujhe lagta hai image samajhne mein dikkat hui!"
-
-# === Safe reply function ===
+# === Safe reply ===
 def safe_reply_text(update: Update, text: str):
     try:
         update.message.reply_text(text)
@@ -166,39 +146,99 @@ def handle_message(update: Update, context: CallbackContext):
 
 # === Sticker Handler ===
 def handle_sticker(update: Update, context: CallbackContext):
-    """Handle static stickers and analyze the content."""
-    if update.message.sticker.is_animated:
-        return  # Ignore animated stickers
-    
-    # Proceed to analyze the sticker
-    file = update.message.sticker.get_file()
-    file_path = file.download()  # Save the sticker as a temporary file
-
-    # Analyze the sticker using Gemini
-    response = analyze_image_with_gemini(file_path, update.message.from_user.first_name)
-
-    safe_reply_text(update, response)
+    if (
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    ):
+        update.message.reply_text("Aww~ cute sticker hai! Mujhe pasand aaya~ tumhe gale lag jaane ka mann kar raha hai~")
 
 # === Media Handler ===
 def handle_media(update: Update, context: CallbackContext):
-    """Handle image messages and analyze the content."""
-    if not (update.message.photo or update.message.sticker):
-        return  # Ignore non-image messages
-    
-    # If it's a photo, download the image
-    if update.message.photo:
-        file = update.message.photo[-1].get_file()  # Get the highest resolution photo
-    elif update.message.sticker and update.message.sticker.is_animated:
-        return  # Ignore animated stickers
-    else:
-        file = update.message.sticker.get_file()
+    if not update.message:
+        return
 
-    file_path = file.download()  # Save the media as a temporary file
+    user_input = update.message.caption or ""
+    user_id = update.message.from_user.id
+    first_name = update.message.from_user.first_name or ""
+    chat_type = update.message.chat.type
+    from_owner = user_id == OWNER_ID
 
-    # Analyze the image or sticker using Gemini
-    response = analyze_image_with_gemini(file_path, update.message.from_user.first_name)
+    is_reply = (
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    )
 
-    safe_reply_text(update, response)
+    if chat_type in ["group", "supergroup"]:
+        if not (
+            "mitsuri" in user_input.lower()
+            or "@shashankxingh" in user_input.lower()
+            or is_reply
+        ):
+            return
+
+    # Detect image content if possible
+    image_file = update.message.photo[-1].get_file() if update.message.photo else None
+    sticker_file = update.message.sticker.get_file() if update.message.sticker and not update.message.sticker.is_animated else None
+
+    file = image_file or sticker_file
+    if not file:
+        return
+
+    file_path = file.download(custom_path="temp_image.png")
+
+    try:
+        with open(file_path, "rb") as img_file:
+            response = model.generate_content(
+                [mitsuri_prompt("Yeh kya hai image mein batao~", from_owner=from_owner, first_name=first_name),
+                 img_file],
+                stream=False,
+            )
+        reply = response.text.strip() if response.text else "Hehe~ kuch clear nahi tha~"
+    except Exception as e:
+        logging.error(f"Image analysis failed: {e}")
+        reply = "Mujhe lagta hai image samajhne mein dikkat hui!"
+
+    os.remove(file_path)
+    safe_reply_text(update, reply)
+
+# === /name ===
+def name_command(update: Update, context: CallbackContext):
+    if not update.message or not update.message.reply_to_message:
+        safe_reply_text(update, "Kya aap ek image pe reply kar rahe ho? Mujhe image chahiye~")
+        return
+
+    msg = update.message.reply_to_message
+
+    # Try to get image or static sticker from the replied message
+    file = None
+    if msg.photo:
+        file = msg.photo[-1].get_file()
+    elif msg.sticker and not msg.sticker.is_animated:
+        file = msg.sticker.get_file()
+
+    if not file:
+        safe_reply_text(update, "Hehe~ image ya static sticker pe reply karo na~")
+        return
+
+    file_path = file.download(custom_path="name_query.png")
+
+    try:
+        with open(file_path, "rb") as img_file:
+            prompt = mitsuri_prompt(
+                "Yeh image mein kya cheez ya kaun character hai? Short aur pyara reply do~",
+                from_owner=update.message.from_user.id == OWNER_ID,
+                first_name=update.message.from_user.first_name or ""
+            )
+            response = model.generate_content([prompt, img_file])
+            reply = response.text.strip() if response.text else "Hehe~ kuch khaas samajh nahi aaya~"
+    except Exception as e:
+        logging.error(f"/name image analysis failed: {e}")
+        reply = "Aww~ lagta hai mujhe is image ko samajhne mein dikkat ho rahi hai~"
+    finally:
+        os.remove(file_path)
+
+    safe_reply_text(update, reply)
 
 # === Error Handler ===
 def error_handler(update: object, context: CallbackContext):
@@ -217,6 +257,7 @@ if __name__ == "__main__":
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("name", name_command))
     dp.add_handler(MessageHandler(Filters.regex(r"^\.ping$"), ping))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     dp.add_handler(MessageHandler(Filters.sticker, handle_sticker))
