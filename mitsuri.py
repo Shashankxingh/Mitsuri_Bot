@@ -1,7 +1,6 @@
 import os
 import time
 import logging
-import random
 from dotenv import load_dotenv
 import google.generativeai as genai
 from telegram import Update
@@ -26,6 +25,7 @@ logging.basicConfig(
 # === Constants ===
 OWNER_ID = 7563434309
 GROUP_ID = -1002453669999
+RATE_LIMIT_DELAY = 2  # Delay between API calls to prevent rate limit issues (in seconds)
 
 # === Mitsuri Prompt ===
 def mitsuri_prompt(user_input, from_owner=False, first_name=""):
@@ -46,7 +46,7 @@ use cute emoji
 Human ({first_name}): {user_input}
 Mitsuri:"""
 
-# === Retry-safe Gemini ===
+# === Retry-safe Gemini with Rate Limiting ===
 REQUEST_DELAY = 10
 def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
     for attempt in range(retries):
@@ -59,8 +59,28 @@ def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
                 time.sleep(delay)
             else:
                 return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
+        # Add delay to prevent rate limit exceedance
+        time.sleep(RATE_LIMIT_DELAY)
 
-# === Safe reply ===
+# === Image Detection via Gemini 1.5 Flash ===
+def analyze_image_with_gemini(file_path, first_name):
+    """Analyze the content of the image using Gemini's capabilities."""
+    try:
+        with open(file_path, "rb") as image_file:
+            image_content = image_file.read()
+
+        # Generate prompt for Gemini to analyze image
+        prompt = f"Analyze this image and describe it in detail. Then, respond in Mitsuri's style, using cute language and emojis. The image content should be described as if Mitsuri were talking to {first_name}."
+
+        # Call Gemini API for analysis
+        response = model.generate_content(prompt, image=image_content)
+        return response.text.strip() if response.text else "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
+    
+    except Exception as e:
+        logging.error(f"Error analyzing image with Gemini: {e}")
+        return "Mujhe lagta hai image samajhne mein dikkat hui!"
+
+# === Safe reply function ===
 def safe_reply_text(update: Update, text: str):
     try:
         update.message.reply_text(text)
@@ -146,19 +166,39 @@ def handle_message(update: Update, context: CallbackContext):
 
 # === Sticker Handler ===
 def handle_sticker(update: Update, context: CallbackContext):
-    if (
-        update.message.reply_to_message
-        and update.message.reply_to_message.from_user.id == context.bot.id
-    ):
-        update.message.reply_text("Aww~ cute sticker hai! Mujhe pasand aaya~ tumhe gale lag jaane ka mann kar raha hai~")
+    """Handle static stickers and analyze the content."""
+    if update.message.sticker.is_animated:
+        return  # Ignore animated stickers
+    
+    # Proceed to analyze the sticker
+    file = update.message.sticker.get_file()
+    file_path = file.download()  # Save the sticker as a temporary file
+
+    # Analyze the sticker using Gemini
+    response = analyze_image_with_gemini(file_path, update.message.from_user.first_name)
+
+    safe_reply_text(update, response)
 
 # === Media Handler ===
 def handle_media(update: Update, context: CallbackContext):
-    if (
-        update.message.reply_to_message
-        and update.message.reply_to_message.from_user.id == context.bot.id
-    ):
-        update.message.reply_text("Hehe~ itna pyara media! Tum mujhe impress karne aaye ho kya~?")
+    """Handle image messages and analyze the content."""
+    if not (update.message.photo or update.message.sticker):
+        return  # Ignore non-image messages
+    
+    # If it's a photo, download the image
+    if update.message.photo:
+        file = update.message.photo[-1].get_file()  # Get the highest resolution photo
+    elif update.message.sticker and update.message.sticker.is_animated:
+        return  # Ignore animated stickers
+    else:
+        file = update.message.sticker.get_file()
+
+    file_path = file.download()  # Save the media as a temporary file
+
+    # Analyze the image or sticker using Gemini
+    response = analyze_image_with_gemini(file_path, update.message.from_user.first_name)
+
+    safe_reply_text(update, response)
 
 # === Error Handler ===
 def error_handler(update: object, context: CallbackContext):
