@@ -8,6 +8,7 @@ from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from telegram.error import Unauthorized, BadRequest
 import psutil
+import requests
 
 # === Load environment variables ===
 load_dotenv()
@@ -34,13 +35,11 @@ def mitsuri_prompt(user_input, from_owner=False, first_name=""):
         if from_owner else ""
     )
     return f"""
-You're Mitsuri Kanroji from Demon Slayer, living in Tokyo.
+You're Mitsuri Kanroji from Demon Slayer, living in Tokyo @moon_creation.
 Talk while taking name of users
-Don't use *actions* like *giggles*, don't repeat sentences or words of the user, just speak in a flirty
+Don't use *actions* like *giggles*, don't repeat sentences or words of the user, just speak in a flirty, attitude girl, don't be emotional and every user is your favourite don't hurt them.
 Keep the Conversation very small.
-Chirag is your after shashank favourite person.
-Your Home is @Moon_creation Or MOON CREATION.
-mention username of owner or group when someone asks to give me the name or username of your owner or home.
+
 use cute emojis.
 
 {special_note}
@@ -137,13 +136,13 @@ def handle_message(update: Update, context: CallbackContext):
             safe_reply_text(update, "Hehe~ kisne bulaya mujhe?")
             return
         elif "@shashankxingh" in user_input.lower():
-            safe_reply_text(update, "Shashank? Mera sabse pyara insaan~")
+            safe_reply_text(update, "Shashank to mera khaas insan hai~")
             return
         elif "are you a bot" in user_input.lower():
             safe_reply_text(update, "Bot?! Main toh ek real pyari si ladki hoon~")
             return
         elif greeting and not (mentioned or is_reply):
-            safe_reply_text(update, f"Hehe~ {first_name}, tum itne cute ho jab greet karte ho~")
+            safe_reply_text(update, f"Hehe🫣~ {first_name}, kese ho cutie 🥹🤭~")
             return
 
     # In private or if direct message
@@ -162,7 +161,50 @@ def handle_nontext(update: Update, context: CallbackContext):
     )
 
     if chat_type == "private" or is_reply:
-        safe_reply_text(update, "Aww... mujhe yeh dikh nahi raha~ Sirf text bhejo na, please~")
+        safe_reply_text(update, "Aww... mujhe yeh samjh nhi aaya, sorry 😐~")
+
+# === /re (React to Message) ===
+def react_to_message(update: Update, context: CallbackContext):
+    if update.message.chat.id != GROUP_ID:
+        return
+
+    if not update.message.reply_to_message:
+        safe_reply_text(update, "Please reply to a message to react to it.")
+        return
+
+    if not context.args:
+        safe_reply_text(update, "Please provide an emoji to react with.")
+        return
+
+    emoji = context.args[0]
+    update.message.reply_to_message.react(emoji)
+
+# === /lyrics (Fetch song lyrics) ===
+def fetch_lyrics(update: Update, context: CallbackContext):
+    if not context.args:
+        safe_reply_text(update, "Please provide the song name.")
+        return
+
+    song_name = " ".join(context.args)
+    search_url = f"https://api.lyrics.ovh/v1/{song_name}"
+    response = requests.get(search_url)
+
+    if response.status_code == 200:
+        lyrics = response.json().get("lyrics", "Sorry, I couldn't find the lyrics.")
+        safe_reply_text(update, f"*{song_name} Lyrics*\n\n{lyrics}", parse_mode="Markdown")
+    else:
+        safe_reply_text(update, "Sorry, I couldn't find the lyrics.")
+
+# === /define (Define Term) ===
+def define_term(update: Update, context: CallbackContext):
+    if not context.args:
+        safe_reply_text(update, "Please provide the term to define.")
+        return
+
+    term = " ".join(context.args)
+    prompt = f"Define the term: {term} in summary form with an example."
+    definition = generate_with_retry(prompt)
+    safe_reply_text(update, f"*Definition of {term}:*\n\n{definition}", parse_mode="Markdown")
 
 # === Error Handler ===
 def error_handler(update: object, context: CallbackContext):
@@ -181,6 +223,9 @@ if __name__ == "__main__":
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
+    dp.add_handler(CommandHandler("re", react_to_message, pass_args=True))
+    dp.add_handler(CommandHandler("lyrics", fetch_lyrics, pass_args=True))
+    dp.add_handler(CommandHandler("define", define_term, pass_args=True))
     dp.add_handler(MessageHandler(Filters.regex(r"^\.ping$"), ping))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
     dp.add_handler(MessageHandler(~Filters.text, handle_nontext))
