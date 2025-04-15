@@ -4,11 +4,10 @@ import logging
 import random
 from dotenv import load_dotenv
 import google.generativeai as genai
-from telegram import Update, Sticker
+from telegram import Update
 from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
 from telegram.error import Unauthorized, BadRequest
 import psutil
-import json
 
 # === Load environment variables ===
 load_dotenv()
@@ -27,20 +26,6 @@ logging.basicConfig(
 # === Constants ===
 OWNER_ID = 7563434309
 GROUP_ID = -1002453669999
-STICKER_FILE = "stickers.json"
-
-# === Load/Save Stickers ===
-def load_stickers():
-    if os.path.exists(STICKER_FILE):
-        with open(STICKER_FILE, "r") as f:
-            return json.load(f)
-    return []
-
-def save_stickers(stickers):
-    with open(STICKER_FILE, "w") as f:
-        json.dump(stickers, f)
-
-stickers = load_stickers()
 
 # === Mitsuri Prompt ===
 def mitsuri_prompt(user_input, from_owner=False, first_name=""):
@@ -114,55 +99,16 @@ def ping(update: Update, context: CallbackContext):
     except (Unauthorized, BadRequest) as e:
         logging.warning(f"Failed to edit message: {e}")
 
-# === /add (sticker set link) ===
-adding_stickers = False
+# === Greeting detection ===
+GREETINGS = {"hi", "hello", "hey", "yo", "heyy", "hola", "namaste", "hii", "helloo"}
 
-def add_sticker(update: Update, context: CallbackContext):
-    global adding_stickers
-    if update.effective_user.id != OWNER_ID:
-        return
+def is_greeting(text: str):
+    words = text.lower().split()
+    return any(word in GREETINGS for word in words)
 
-    if update.message.chat.type != "private":
-        return  # Only in DM
-
-    if not context.args:
-        update.message.reply_text("Sticker set ka link do na~")
-        return
-
-    link = context.args[0]
-    if "addstickers/" not in link:
-        update.message.reply_text("Sahi link bhejo! Mujhe confuse mat karo~")
-        return
-
-    set_name = link.split("addstickers/")[-1]
-    try:
-        sticker_set = context.bot.get_sticker_set(set_name)
-        new_ids = [sticker.file_id for sticker in sticker_set.stickers if sticker.file_id not in stickers]
-        stickers.extend(new_ids)
-        save_stickers(stickers)
-        msg = update.message.reply_text(f"{len(new_ids)} naye stickers add kiye, hehe~")
-        adding_stickers = True
-    except Exception as e:
-        logging.error(f"Sticker set error: {e}")
-        update.message.reply_text("Mujhe wo sticker set nahi mila... maybe link galat hai?")
-        return
-
-    context.job_queue.run_once(lambda ctx: msg.delete(), 15)
-
-def stop_adding(update: Update, context: CallbackContext):
-    global adding_stickers
-    if update.effective_user.id != OWNER_ID:
-        return
-    adding_stickers = False
-    safe_reply_text(update, "Mitsuri ab stickers nahi save karegi... baad mein try karna!")
-
-# === /stop ===
-def stop(update: Update, context: CallbackContext):
-    stop_adding(update, context)
-
-# === Handle Messages ===
+# === Handle Text Messages ===
 def handle_message(update: Update, context: CallbackContext):
-    if not update.message:
+    if not update.message or not update.message.text:
         return
 
     user_input = update.message.text
@@ -171,26 +117,19 @@ def handle_message(update: Update, context: CallbackContext):
     chat_type = update.message.chat.type
     from_owner = user_id == OWNER_ID
 
-    if adding_stickers:
-        if chat_type == "private" and update.message.sticker:
-            stickers.append(update.message.sticker.file_id)
-            save_stickers(stickers)
-            safe_reply_text(update, "Sticker saved! Keep sending more~")
-            return
+    is_reply = (
+        update.message.reply_to_message
+        and update.message.reply_to_message.from_user
+        and update.message.reply_to_message.from_user.id == context.bot.id
+    )
 
-    # Group mentions or replies only
+    is_mention = (
+        "mitsuri" in user_input.lower()
+        or "@shashankxingh" in user_input.lower()
+    )
+
     if chat_type in ["group", "supergroup"]:
-        is_reply = (
-            update.message.reply_to_message
-            and update.message.reply_to_message.from_user
-            and update.message.reply_to_message.from_user.id == context.bot.id
-        )
-
-        if not (
-            "mitsuri" in user_input.lower()
-            or "@shashankxingh" in user_input.lower()
-            or is_reply
-        ):
+        if not (is_mention or is_reply):
             return
 
         if user_input.lower() == "mitsuri":
@@ -202,20 +141,32 @@ def handle_message(update: Update, context: CallbackContext):
         elif "are you a bot" in user_input.lower():
             safe_reply_text(update, "Bot?! Main toh ek real pyari si ladki hoon~")
             return
+        elif is_greeting(user_input):
+            safe_reply_text(update, f"Hii {first_name}~ kya haal hai?")
+            return
+
+    # In DMs or valid mention
+    if is_greeting(user_input):
+        safe_reply_text(update, f"Hii {first_name}~ kya haal hai?")
+        return
 
     prompt = mitsuri_prompt(user_input, from_owner=from_owner, first_name=first_name)
     reply = generate_with_retry(prompt)
     safe_reply_text(update, reply)
 
-# === Sticker Handler ===
-def handle_sticker(update: Update, context: CallbackContext):
-    if (
+# === Handle Non-Text (like sticker, photo, etc.) ===
+def handle_nontext(update: Update, context: CallbackContext):
+    if not update.message:
+        return
+
+    chat_type = update.message.chat.type
+    is_reply = (
         update.message.reply_to_message
         and update.message.reply_to_message.from_user.id == context.bot.id
-    ):
-        if stickers:
-            sticker_id = random.choice(stickers)
-            update.message.reply_sticker(sticker_id)
+    )
+
+    if chat_type == "private" or is_reply:
+        safe_reply_text(update, "Aww... mujhe yeh dikh nahi raha😐~")
 
 # === Error Handler ===
 def error_handler(update: object, context: CallbackContext):
@@ -234,11 +185,9 @@ if __name__ == "__main__":
     dp = updater.dispatcher
 
     dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(CommandHandler("add", add_sticker, pass_args=True))
-    dp.add_handler(CommandHandler("stop", stop))
     dp.add_handler(MessageHandler(Filters.regex(r"^\.ping$"), ping))
     dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_message))
-    dp.add_handler(MessageHandler(Filters.sticker, handle_sticker))
+    dp.add_handler(MessageHandler(~Filters.text, handle_nontext))
     dp.add_error_handler(error_handler)
 
     logging.info("Mitsuri is online and full of pyaar!")
