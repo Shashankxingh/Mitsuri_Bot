@@ -58,9 +58,14 @@ def generate_with_retry(prompt, retries=3, delay=REQUEST_DELAY):
             else:
                 return "Mujhe lagta hai wo thoda busy hai... baad mein try karna!"
 
-# === Safe reply ===
+# === Safe reply with typing animation ===
 def safe_reply_text(update: Update, text: str):
     try:
+        # Send typing action first
+        update.message.chat.send_action(action="typing")
+        # Simulate typing delay (you can adjust the time as needed)
+        time.sleep(2)  # Delay in seconds before sending the actual message
+        # Now send the response
         update.message.reply_text(text)
     except (Unauthorized, BadRequest) as e:
         logging.warning(f"Failed to send message: {e}")
