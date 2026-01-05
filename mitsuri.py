@@ -2,6 +2,12 @@ import os
 import asyncio
 import threading
 import logging
+from datetime import datetime
+import pytz 
+
+# NEW: Import Search Tool
+from duckduckgo_search import DDGS
+
 from dotenv import load_dotenv
 from flask import Flask
 from pymongo import MongoClient
@@ -14,52 +20,43 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import Forbidden, TimedOut, NetworkError
 from telegram.request import HTTPXRequest
 
+# AI Clients
 from groq import AsyncGroq
-from cerebras.cloud.sdk import Cerebras
-from sambanova import SambaNova
+from openai import AsyncOpenAI 
 
 # ================= LOGGING =================
-
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+    format="%(asctime)s | %(name)s | %(message)s",
 )
 logger = logging.getLogger("mitsuri")
-
-# Silence Flask spam
 logging.getLogger("werkzeug").disabled = True
+logging.getLogger("httpx").setLevel(logging.WARNING)
 
-# ================= LOAD ENV =================
-
+# ================= SETUP =================
 load_dotenv()
-
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
+OWNER_ID = 8162412883 # Replace with your ID if different
 
-OWNER_ID = 8162412883
-ADMIN_GROUP_ID = -1002759296936
-
-# ================= FLASK (RENDER PORT FIX) =================
-
+# ================= WEB SERVER =================
 app = Flask(__name__)
-
 @app.route("/")
-def home():
-    return "Mitsuri is alive 🌸"
+def home(): return "Mitsuri Agent Online 🌸"
 
 def run_web():
-    port = int(os.environ.get("PORT", 10000))
-    logger.info("Starting dummy web server on port %s", port)
-    app.run(host="0.0.0.0", port=port)
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 10000)))
 
 threading.Thread(target=run_web, daemon=True).start()
 
-# ================= SYSTEM PROMPT =================
+# ================= CONFIG =================
+HISTORY_LIMIT = 10 
+IST = pytz.timezone('Asia/Kolkata')
 
-SYSTEM_PROMPT = (
+# Base Persona
+BASE_SYSTEM_PROMPT = (
     "You are Mitsuri Kanroji from Demon Slayer. "
     "Personality: warm, cheerful, romantic, sweet. "
     "Speak in Hinglish (Hindi + English). "
@@ -67,266 +64,186 @@ SYSTEM_PROMPT = (
     "Use emojis sparingly (🌸💖🍡)."
 )
 
-# ================= AI MODELS =================
-
 AI_MODELS = {
-    "groq": [
-        "llama-3.1-8b-instant",
-        "llama-3.3-70b-versatile",
-        "mixtral-8x7b-32768",
-        "gemma2-9b-it",
-    ],
-    "cerebras": [
-        "llama3.1-8b",
-        "llama-3.3-70b",
-    ],
-    "sambanova": [
-        "Meta-Llama-3.1-8B-Instruct",
-        "Meta-Llama-3.3-70B-Instruct",
-    ],
+    "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
+    "cerebras": ["llama3.1-8b", "llama3.1-70b"], 
+    "sambanova": ["Meta-Llama-3.1-8B-Instruct", "Meta-Llama-3.1-70B-Instruct"],
 }
 
 AI_PROVIDER = "groq"
 AI_MODEL = "llama-3.1-8b-instant"
 
 # ================= DATABASE =================
-
-logger.info("Connecting to MongoDB...")
 mongo = MongoClient(MONGO_URI)
 db = mongo["mitsuri"]
 users = db["users"]
-logger.info("MongoDB connected")
 
-def save_user(update: Update):
-    try:
-        users.update_one(
-            {"chat_id": update.effective_chat.id},
-            {"$set": {"chat_id": update.effective_chat.id}},
-            upsert=True,
-        )
-    except Exception as e:
-        logger.warning("Mongo save failed: %s", e)
+def get_history(chat_id):
+    data = users.find_one({"chat_id": chat_id}, {"history": 1})
+    return data["history"] if data and "history" in data else []
+
+def update_history(chat_id, role, content):
+    users.update_one(
+        {"chat_id": chat_id},
+        {"$push": {"history": {"$each": [{"role": role, "content": content}], "$slice": -HISTORY_LIMIT}}},
+        upsert=True
+    )
 
 # ================= AI CLIENTS =================
+groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+cerebras_client = AsyncOpenAI(api_key=os.getenv("CEREBRAS_API_KEY"), base_url="https://api.cerebras.ai/v1")
+sambanova_client = AsyncOpenAI(api_key=os.getenv("SAMBANOVA_API_KEY"), base_url="https://api.sambanova.ai/v1")
 
-groq = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-cerebras = Cerebras(api_key=os.getenv("CEREBRAS_API_KEY"))
-sambanova = SambaNova(
-    api_key=os.getenv("SAMBANOVA_API_KEY"),
-    base_url="https://api.sambanova.ai/v1",
-)
+# ================= 🔍 THE SEARCH TOOL =================
 
-async def ask_ai(prompt: str):
-    messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
-        {"role": "user", "content": prompt},
-    ]
+def search_web(query):
+    """Real-time search using DuckDuckGo"""
+    try:
+        # Get top 3 results
+        results = DDGS().text(query, max_results=3)
+        if not results: return None
+        
+        # Format results into a clean string
+        formatted = "\n".join([f"Source: {r['title']}\nSummary: {r['body']}\nLink: {r['href']}\n" for r in results])
+        return formatted
+    except Exception as e:
+        logger.error(f"Search failed: {e}")
+        return None
 
-    logger.info("AI request | provider=%s | model=%s", AI_PROVIDER, AI_MODEL)
+# ================= 🧠 THE AGENT BRAIN =================
 
+async def get_response(messages, model, temperature=0.7):
+    """Helper to call the selected AI provider"""
     try:
         if AI_PROVIDER == "groq":
-            r = await groq.chat.completions.create(
-                model=AI_MODEL,
-                messages=messages,
-                max_tokens=200,
-            )
+            r = await groq_client.chat.completions.create(model=model, messages=messages, temperature=temperature, max_tokens=1000)
             return r.choices[0].message.content
-
-        if AI_PROVIDER == "cerebras":
-            r = await asyncio.to_thread(
-                cerebras.chat.completions.create,
-                model=AI_MODEL,
-                messages=messages,
-                max_tokens=200,
-            )
+        elif AI_PROVIDER == "cerebras":
+            r = await cerebras_client.chat.completions.create(model=model, messages=messages, temperature=temperature, max_tokens=1000)
             return r.choices[0].message.content
-
-        if AI_PROVIDER == "sambanova":
-            r = await asyncio.to_thread(
-                sambanova.chat.completions.create,
-                model=AI_MODEL,
-                messages=messages,
-                max_tokens=200,
-            )
+        elif AI_PROVIDER == "sambanova":
+            r = await sambanova_client.chat.completions.create(model=model, messages=messages, temperature=temperature, max_tokens=1000)
             return r.choices[0].message.content
-
     except Exception as e:
-        logger.error("AI failure: %s", e)
+        logger.error(f"AI Error: {e}")
+        return None
 
-    return "Ahh~ thoda network issue lag raha hai 🥺"
-
-# ================= COMMANDS =================
-
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    logger.info("/start from %s", update.effective_chat.id)
-    save_user(update)
-    await update.message.reply_text("🌸 Hii! Main Mitsuri hoon 💖")
-
-async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text(
-        "/start – start\n"
-        "/help – help\n"
-        "/ai – AI control (owner only)\n"
-        "/cast – broadcast (owner only)"
+async def ask_ai_agent(chat_id: int, user_prompt: str):
+    # 1. Get Conversation History
+    history = get_history(chat_id)
+    
+    # 2. DECISION STEP (Router)
+    # We ask a fast/cheap model if we need to search
+    # If the user says "Hi", we don't search. If "Bitcoin price", we search.
+    
+    router_prompt = (
+        f"User said: '{user_prompt}'. "
+        "Does this require searching the internet for real-time info (news, weather, sports, prices, specific facts)? "
+        "Reply ONLY with 'SEARCH' or 'CHAT'."
     )
-
-# ================= /AI BUTTONS =================
-
-async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if (
-        update.effective_user.id != OWNER_ID
-        or update.effective_chat.id != ADMIN_GROUP_ID
-    ):
-        logger.warning("Unauthorized /ai attempt")
-        return
-
-    keyboard = [
-        [InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")]
-        for p in AI_MODELS
-    ]
-
-    await update.message.reply_text(
-        "🧠 Select AI Provider:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
-    )
-
-async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AI_PROVIDER, AI_MODEL
-
-    query = update.callback_query
-    await query.answer()
-
-    if (
-        query.from_user.id != OWNER_ID
-        or query.message.chat.id != ADMIN_GROUP_ID
-    ):
-        logger.warning("Unauthorized AI button click")
-        return
-
-    data = query.data
-
-    if data.startswith("prov:"):
-        provider = data.split(":")[1]
-        keyboard = [
-            [InlineKeyboardButton(m, callback_data=f"model:{provider}:{m}")]
-            for m in AI_MODELS[provider]
-        ]
-        await query.message.edit_text(
-            f"Provider: {provider}\nChoose model:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+    
+    # Use Groq 8b for routing (it's fastest)
+    try:
+        decision = await groq_client.chat.completions.create(
+            model="llama-3.1-8b-instant",
+            messages=[{"role": "user", "content": router_prompt}],
+            max_tokens=5
         )
+        intent = decision.choices[0].message.content.strip().upper()
+    except:
+        intent = "CHAT" # Fallback
 
-    elif data.startswith("model:"):
-        _, provider, model = data.split(":", 2)
-        AI_PROVIDER = provider
-        AI_MODEL = model
-        logger.info("AI switched → %s / %s", provider, model)
-        await query.message.edit_text(
-            f"✅ AI Updated\n\nProvider: {provider}\nModel: {model}"
-        )
+    logger.info(f"Intent: {intent} | Prompt: {user_prompt}")
 
-# ================= BROADCAST =================
+    # 3. TOOL STEP (If Search is needed)
+    search_context = ""
+    if "SEARCH" in intent:
+        await asyncio.sleep(0.5) # Simulate thinking
+        raw_search = await asyncio.to_thread(search_web, user_prompt)
+        
+        if raw_search:
+            search_context = (
+                f"\n\n[🔍 WEB SEARCH RESULTS - USE THIS DATA TO ANSWER]:\n{raw_search}\n"
+                f"[End of Search Data]\n"
+                f"Note: Synthesize this info. If user asks for links, provide them."
+            )
+    
+    # 4. FINAL ANSWER STEP
+    # Dynamic Date/Time
+    now = datetime.now(IST)
+    time_str = now.strftime("%Y-%m-%d %I:%M %p IST")
+    
+    system_instruction = BASE_SYSTEM_PROMPT + f"\n[Current Time: {time_str}]" + search_context
 
-async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if (
-        update.effective_user.id != OWNER_ID
-        or update.effective_chat.id != ADMIN_GROUP_ID
-    ):
-        return
+    final_messages = [{"role": "system", "content": system_instruction}] + history + [{"role": "user", "content": user_prompt}]
+    
+    response = await get_response(final_messages, AI_MODEL)
+    
+    if not response:
+        return "Ahh~ Network issue lag raha hai 🥺 try again!"
 
-    msg = " ".join(context.args)
-    if not msg:
-        return
+    # 5. Save Memory
+    update_history(chat_id, "user", user_prompt)
+    update_history(chat_id, "assistant", response)
 
-    logger.info("Broadcast started")
+    return response
 
-    for u in users.find({}, {"chat_id": 1}):
-        try:
-            await context.bot.send_message(u["chat_id"], msg)
-        except Forbidden:
-            users.delete_one({"chat_id": u["chat_id"]})
-        except Exception as e:
-            logger.warning("Broadcast error: %s", e)
-
-    await update.message.reply_text("📢 Broadcast sent")
-
-# ================= CHAT HANDLER =================
+# ================= TELEGRAM HANDLERS =================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    text = msg.text.lower()
-    bot_username = context.bot.username.lower()
-    chat_type = update.effective_chat.type
+    if not msg or not msg.text: return
+    
+    # Basic filters
+    is_private = update.effective_chat.type == "private"
+    is_reply = msg.reply_to_message and msg.reply_to_message.from_user.id == context.bot.id
+    if not (is_private or "mitsuri" in msg.text.lower() or is_reply): return
 
-    should_reply = False
+    # Typing indicator
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    
+    # Agent Logic
+    reply = await ask_ai_agent(update.effective_chat.id, msg.text)
+    await msg.reply_text(reply)
 
-    if chat_type == "private":
-        should_reply = True
-    else:
-        if "mitsuri" in text:
-            should_reply = True
-        elif f"@{bot_username}" in text:
-            should_reply = True
-        elif msg.reply_to_message and msg.reply_to_message.from_user.id == context.bot.id:
-            should_reply = True
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users.update_one({"chat_id": update.effective_chat.id}, {"$set": {"history": []}})
+    await update.message.reply_text("🌸 Mitsuri Online! Ask me anything (I can search the web too!) 💖")
 
-    if not should_reply:
-        return
+async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID: return
+    kb = [[InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")] for p in AI_MODELS]
+    await update.message.reply_text("Select Provider:", reply_markup=InlineKeyboardMarkup(kb))
 
-    save_user(update)
-    reply = await ask_ai(msg.text)
-
-    try:
-        await msg.reply_text(reply)
-    except Forbidden:
-        users.delete_one({"chat_id": update.effective_chat.id})
-
-# ================= GLOBAL ERROR HANDLER =================
-
-async def error_handler(update, context):
-    err = context.error
-
-    if isinstance(err, TimedOut):
-        logger.warning("Telegram timeout – skipped")
-        return
-
-    if isinstance(err, NetworkError):
-        logger.warning("Telegram network error: %s", err)
-        return
-
-    logger.error("Unhandled error", exc_info=err)
+async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AI_PROVIDER, AI_MODEL
+    query = update.callback_query
+    await query.answer()
+    if query.from_user.id != OWNER_ID: return
+    
+    data = query.data
+    if data.startswith("prov:"):
+        prov = data.split(":")[1]
+        kb = [[InlineKeyboardButton(m, callback_data=f"model:{prov}:{m}")] for m in AI_MODELS[prov]]
+        await query.message.edit_text(f"Models for {prov}:", reply_markup=InlineKeyboardMarkup(kb))
+    elif data.startswith("model:"):
+        _, prov, mod = data.split(":", 2)
+        AI_PROVIDER = prov; AI_MODEL = mod
+        await query.message.edit_text(f"✅ Active: {prov} / {mod}")
 
 # ================= MAIN =================
 
 def main():
-    logger.info("Starting Mitsuri bot...")
+    request = HTTPXRequest(connect_timeout=20, read_timeout=20)
+    app_bot = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
 
-    request = HTTPXRequest(
-        connect_timeout=20,
-        read_timeout=20,
-        write_timeout=20,
-        pool_timeout=20,
-    )
+    app_bot.add_handler(CommandHandler("start", start))
+    app_bot.add_handler(CommandHandler("ai", ai_cmd))
+    app_bot.add_handler(CallbackQueryHandler(ai_buttons))
+    app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    application = (
-        ApplicationBuilder()
-        .token(BOT_TOKEN)
-        .request(request)
-        .build()
-    )
-
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("help", help_cmd))
-    application.add_handler(CommandHandler("ai", ai_cmd))
-    application.add_handler(CallbackQueryHandler(ai_buttons))
-    application.add_handler(CommandHandler("cast", cast))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
-
-    application.add_error_handler(error_handler)
-
-    logger.info("🌸 Mitsuri is running...")
-    application.run_polling()
+    logger.info("🌸 Mitsuri Agent (Search Enabled) is running...")
+    app_bot.run_polling()
 
 if __name__ == "__main__":
     main()
