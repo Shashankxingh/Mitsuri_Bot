@@ -2,11 +2,16 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from telegram import Update
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
+    CallbackQueryHandler,
     ContextTypes,
     filters,
 )
@@ -105,59 +110,85 @@ async def ask_ai(prompt: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update)
-    await update.message.reply_text(
-        "🌸 Hi! I'm Mitsuri!\n"
-        "Talk to me normally 💖\n\n"
-        "Use /help for commands."
-    )
+    await update.message.reply_text("🌸 Hi! I'm Mitsuri 💖")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "/start – start bot\n"
-        "/help – show help\n"
-        "/ai – change AI (owner only)\n"
+        "/help – help\n"
+        "/ai – AI control (owner only)\n"
         "/cast – broadcast (owner only)"
     )
 
+# ================= /AI WITH BUTTONS =================
+
 async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AI_PROVIDER, AI_MODEL
-
-    if update.effective_user.id != OWNER_ID:
+    if (
+        update.effective_user.id != OWNER_ID
+        or update.effective_chat.id != ADMIN_GROUP_ID
+    ):
         return
 
-    if len(context.args) != 2:
-        text = "Usage:\n/ai <provider> <model>\n\nAvailable models:\n"
-        for p, models in AI_MODELS.items():
-            text += f"\n🔹 {p}:\n"
-            for m in models:
-                text += f"  - {m}\n"
-        await update.message.reply_text(text)
-        return
-
-    provider = context.args[0].lower()
-    model = context.args[1]
-
-    if provider not in AI_MODELS:
-        await update.message.reply_text("❌ Invalid provider.")
-        return
-
-    if model not in AI_MODELS[provider]:
-        await update.message.reply_text("❌ Invalid model for this provider.")
-        return
-
-    AI_PROVIDER = provider
-    AI_MODEL = model
+    keyboard = [
+        [InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")]
+        for p in AI_MODELS.keys()
+    ]
 
     await update.message.reply_text(
-        f"✅ AI updated!\n\nProvider: {AI_PROVIDER}\nModel: {AI_MODEL}"
+        "🧠 Select AI Provider:",
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
-async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID:
+async def ai_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global AI_PROVIDER, AI_MODEL
+
+    query = update.callback_query
+    await query.answer()
+
+    # 🔒 SECURITY CHECK
+    if (
+        query.from_user.id != OWNER_ID
+        or query.message.chat.id != ADMIN_GROUP_ID
+    ):
+        await query.answer("❌ Not allowed", show_alert=True)
         return
 
-    if update.effective_chat.id != ADMIN_GROUP_ID:
-        await update.message.reply_text("❌ Use this in admin group only.")
+    data = query.data
+
+    # Provider selection
+    if data.startswith("prov:"):
+        provider = data.split(":")[1]
+
+        keyboard = [
+            [InlineKeyboardButton(m, callback_data=f"model:{provider}:{m}")]
+            for m in AI_MODELS[provider]
+        ]
+
+        await query.message.edit_text(
+            f"📦 Provider: {provider}\nChoose model:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    # Model selection
+    elif data.startswith("model:"):
+        _, provider, model = data.split(":", 2)
+
+        AI_PROVIDER = provider
+        AI_MODEL = model
+
+        await query.message.edit_text(
+            f"✅ AI Updated!\n\n"
+            f"Provider: {AI_PROVIDER}\n"
+            f"Model: {AI_MODEL}"
+        )
+
+# ================= BROADCAST =================
+
+async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if (
+        update.effective_user.id != OWNER_ID
+        or update.effective_chat.id != ADMIN_GROUP_ID
+    ):
         return
 
     msg = " ".join(context.args)
@@ -174,14 +205,39 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("📢 Broadcast sent!")
 
+# ================= CHAT HANDLER =================
+
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    msg = update.message
+    chat_type = update.effective_chat.type
+    bot_username = context.bot.username.lower()
+    text = msg.text.lower()
+
+    should_reply = False
+
+    if chat_type == "private":
+        should_reply = True
+    else:
+        if "mitsuri" in text:
+            should_reply = True
+        elif f"@{bot_username}" in text:
+            should_reply = True
+        elif (
+            msg.reply_to_message
+            and msg.reply_to_message.from_user.id == context.bot.id
+        ):
+            should_reply = True
+
+    if not should_reply:
+        return
+
     save_user(update)
-    reply = await ask_ai(update.message.text)
+
+    reply = await ask_ai(msg.text)
 
     try:
-        await update.message.reply_text(reply)
+        await msg.reply_text(reply)
     except Forbidden:
-        # Bot was kicked / removed
         users.delete_one({"chat_id": update.effective_chat.id})
 
 # ================= MAIN =================
@@ -192,6 +248,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("ai", ai_cmd))
+    app.add_handler(CallbackQueryHandler(ai_button))
     app.add_handler(CommandHandler("cast", cast))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
