@@ -5,5 +5,5 @@ python-telegram-bot
 flask
 python-dotenv
 pytz
-duckduckgo-search
+ddgs
 gunicorn
