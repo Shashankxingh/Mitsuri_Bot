@@ -1,6 +1,8 @@
 import os
 import asyncio
+import threading
 from dotenv import load_dotenv
+from flask import Flask
 from pymongo import MongoClient
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
@@ -17,7 +19,7 @@ from groq import AsyncGroq
 from cerebras.cloud.sdk import Cerebras
 from sambanova import SambaNova
 
-# ================= CONFIG =================
+# ================= LOAD ENV =================
 
 load_dotenv()
 
@@ -27,12 +29,26 @@ MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = 8162412883
 ADMIN_GROUP_ID = -1002759296936
 
+# ================= FLASK (RENDER PORT FIX) =================
+
+app = Flask(__name__)
+
+@app.route("/")
+def home():
+    return "Mitsuri is alive 🌸"
+
+def run_web():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host="0.0.0.0", port=port)
+
+threading.Thread(target=run_web, daemon=True).start()
+
 # ================= SYSTEM PROMPT =================
 
 SYSTEM_PROMPT = (
     "You are Mitsuri Kanroji from Demon Slayer. "
     "Personality: warm, cheerful, romantic, sweet. "
-    "Use Hinglish (Hindi + English). "
+    "Speak in Hinglish (Hindi + English). "
     "Keep replies short, cute, friendly. "
     "Use emojis sparingly (🌸💖🍡)."
 )
@@ -88,30 +104,30 @@ async def ask_ai(prompt: str):
     ]
 
     if AI_PROVIDER == "groq":
-        r = await groq.chat.completions.create(
+        res = await groq.chat.completions.create(
             model=AI_MODEL,
             messages=messages,
             max_tokens=200,
         )
-        return r.choices[0].message.content
+        return res.choices[0].message.content
 
     if AI_PROVIDER == "cerebras":
-        r = await asyncio.to_thread(
+        res = await asyncio.to_thread(
             cerebras.chat.completions.create,
             model=AI_MODEL,
             messages=messages,
             max_tokens=200,
         )
-        return r.choices[0].message.content
+        return res.choices[0].message.content
 
     if AI_PROVIDER == "sambanova":
-        r = await asyncio.to_thread(
+        res = await asyncio.to_thread(
             sambanova.chat.completions.create,
             model=AI_MODEL,
             messages=messages,
             max_tokens=200,
         )
-        return r.choices[0].message.content
+        return res.choices[0].message.content
 
     return "AI error."
 
@@ -138,45 +154,49 @@ async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ):
         return
 
-    kb = [[InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")]
-          for p in AI_MODELS]
+    keyboard = [
+        [InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")]
+        for p in AI_MODELS
+    ]
 
     await update.message.reply_text(
         "🧠 Select AI Provider:",
-        reply_markup=InlineKeyboardMarkup(kb),
+        reply_markup=InlineKeyboardMarkup(keyboard),
     )
 
 async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AI_PROVIDER, AI_MODEL
 
-    q = update.callback_query
-    await q.answer()
+    query = update.callback_query
+    await query.answer()
 
     if (
-        q.from_user.id != OWNER_ID
-        or q.message.chat.id != ADMIN_GROUP_ID
+        query.from_user.id != OWNER_ID
+        or query.message.chat.id != ADMIN_GROUP_ID
     ):
         return
 
-    data = q.data
+    data = query.data
 
     if data.startswith("prov:"):
-        p = data.split(":")[1]
-        kb = [[InlineKeyboardButton(m, callback_data=f"model:{p}:{m}")]
-              for m in AI_MODELS[p]]
+        provider = data.split(":")[1]
+        keyboard = [
+            [InlineKeyboardButton(m, callback_data=f"model:{provider}:{m}")]
+            for m in AI_MODELS[provider]
+        ]
 
-        await q.message.edit_text(
-            f"Provider: {p}\nChoose model:",
-            reply_markup=InlineKeyboardMarkup(kb),
+        await query.message.edit_text(
+            f"Provider: {provider}\nChoose model:",
+            reply_markup=InlineKeyboardMarkup(keyboard),
         )
 
     elif data.startswith("model:"):
-        _, p, m = data.split(":", 2)
-        AI_PROVIDER = p
-        AI_MODEL = m
+        _, provider, model = data.split(":", 2)
+        AI_PROVIDER = provider
+        AI_MODEL = model
 
-        await q.message.edit_text(
-            f"✅ AI Updated\n\nProvider: {p}\nModel: {m}"
+        await query.message.edit_text(
+            f"✅ AI Updated\n\nProvider: {provider}\nModel: {model}"
         )
 
 # ================= BROADCAST =================
@@ -202,7 +222,7 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text("📢 Broadcast sent")
 
-# ================= CHAT HANDLER =================
+# ================= CHAT HANDLER (NO FLOOD) =================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -236,17 +256,17 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ================= MAIN =================
 
 def main():
-    app = ApplicationBuilder().token(BOT_TOKEN).build()
+    application = ApplicationBuilder().token(BOT_TOKEN).build()
 
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_cmd))
-    app.add_handler(CommandHandler("ai", ai_cmd))
-    app.add_handler(CallbackQueryHandler(ai_buttons))
-    app.add_handler(CommandHandler("cast", cast))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("help", help_cmd))
+    application.add_handler(CommandHandler("ai", ai_cmd))
+    application.add_handler(CallbackQueryHandler(ai_buttons))
+    application.add_handler(CommandHandler("cast", cast))
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
     print("🌸 Mitsuri is running...")
-    app.run_polling()
+    application.run_polling()
 
 if __name__ == "__main__":
     main()
