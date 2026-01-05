@@ -4,3 +4,4 @@ pymongo
 groq
 cerebras-cloud-sdk
 sambanova
+flask
