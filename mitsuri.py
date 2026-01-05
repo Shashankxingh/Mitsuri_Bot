@@ -1,6 +1,7 @@
 import os
 import asyncio
 import threading
+import logging
 from dotenv import load_dotenv
 from flask import Flask
 from pymongo import MongoClient
@@ -13,11 +14,23 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import Forbidden
+from telegram.error import Forbidden, TimedOut, NetworkError
+from telegram.request import HTTPXRequest
 
 from groq import AsyncGroq
 from cerebras.cloud.sdk import Cerebras
 from sambanova import SambaNova
+
+# ================= LOGGING =================
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+)
+logger = logging.getLogger("mitsuri")
+
+# Silence Flask spam
+logging.getLogger("werkzeug").disabled = True
 
 # ================= LOAD ENV =================
 
@@ -39,6 +52,7 @@ def home():
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
+    logger.info("Starting dummy web server on port %s", port)
     app.run(host="0.0.0.0", port=port)
 
 threading.Thread(target=run_web, daemon=True).start()
@@ -48,8 +62,8 @@ threading.Thread(target=run_web, daemon=True).start()
 SYSTEM_PROMPT = (
     "You are Mitsuri Kanroji from Demon Slayer. "
     "Personality: warm, cheerful, romantic, sweet. "
-    "Speak in the language, user is comfortable. "
-    "Keep replies very very short, cute, friendly. "
+    "Speak in Hinglish (Hindi + English). "
+    "Keep replies short, cute, friendly. "
     "Use emojis sparingly (🌸💖🍡)."
 )
 
@@ -77,16 +91,21 @@ AI_MODEL = "llama-3.1-8b-instant"
 
 # ================= DATABASE =================
 
+logger.info("Connecting to MongoDB...")
 mongo = MongoClient(MONGO_URI)
 db = mongo["mitsuri"]
 users = db["users"]
+logger.info("MongoDB connected")
 
 def save_user(update: Update):
-    users.update_one(
-        {"chat_id": update.effective_chat.id},
-        {"$set": {"chat_id": update.effective_chat.id}},
-        upsert=True,
-    )
+    try:
+        users.update_one(
+            {"chat_id": update.effective_chat.id},
+            {"$set": {"chat_id": update.effective_chat.id}},
+            upsert=True,
+        )
+    except Exception as e:
+        logger.warning("Mongo save failed: %s", e)
 
 # ================= AI CLIENTS =================
 
@@ -103,37 +122,44 @@ async def ask_ai(prompt: str):
         {"role": "user", "content": prompt},
     ]
 
-    if AI_PROVIDER == "groq":
-        res = await groq.chat.completions.create(
-            model=AI_MODEL,
-            messages=messages,
-            max_tokens=200,
-        )
-        return res.choices[0].message.content
+    logger.info("AI request | provider=%s | model=%s", AI_PROVIDER, AI_MODEL)
 
-    if AI_PROVIDER == "cerebras":
-        res = await asyncio.to_thread(
-            cerebras.chat.completions.create,
-            model=AI_MODEL,
-            messages=messages,
-            max_tokens=200,
-        )
-        return res.choices[0].message.content
+    try:
+        if AI_PROVIDER == "groq":
+            r = await groq.chat.completions.create(
+                model=AI_MODEL,
+                messages=messages,
+                max_tokens=200,
+            )
+            return r.choices[0].message.content
 
-    if AI_PROVIDER == "sambanova":
-        res = await asyncio.to_thread(
-            sambanova.chat.completions.create,
-            model=AI_MODEL,
-            messages=messages,
-            max_tokens=200,
-        )
-        return res.choices[0].message.content
+        if AI_PROVIDER == "cerebras":
+            r = await asyncio.to_thread(
+                cerebras.chat.completions.create,
+                model=AI_MODEL,
+                messages=messages,
+                max_tokens=200,
+            )
+            return r.choices[0].message.content
 
-    return "AI error."
+        if AI_PROVIDER == "sambanova":
+            r = await asyncio.to_thread(
+                sambanova.chat.completions.create,
+                model=AI_MODEL,
+                messages=messages,
+                max_tokens=200,
+            )
+            return r.choices[0].message.content
+
+    except Exception as e:
+        logger.error("AI failure: %s", e)
+
+    return "Ahh~ thoda network issue lag raha hai 🥺"
 
 # ================= COMMANDS =================
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    logger.info("/start from %s", update.effective_chat.id)
     save_user(update)
     await update.message.reply_text("🌸 Hii! Main Mitsuri hoon 💖")
 
@@ -152,6 +178,7 @@ async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update.effective_user.id != OWNER_ID
         or update.effective_chat.id != ADMIN_GROUP_ID
     ):
+        logger.warning("Unauthorized /ai attempt")
         return
 
     keyboard = [
@@ -174,6 +201,7 @@ async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         query.from_user.id != OWNER_ID
         or query.message.chat.id != ADMIN_GROUP_ID
     ):
+        logger.warning("Unauthorized AI button click")
         return
 
     data = query.data
@@ -184,7 +212,6 @@ async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
             [InlineKeyboardButton(m, callback_data=f"model:{provider}:{m}")]
             for m in AI_MODELS[provider]
         ]
-
         await query.message.edit_text(
             f"Provider: {provider}\nChoose model:",
             reply_markup=InlineKeyboardMarkup(keyboard),
@@ -194,7 +221,7 @@ async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
         _, provider, model = data.split(":", 2)
         AI_PROVIDER = provider
         AI_MODEL = model
-
+        logger.info("AI switched → %s / %s", provider, model)
         await query.message.edit_text(
             f"✅ AI Updated\n\nProvider: {provider}\nModel: {model}"
         )
@@ -212,17 +239,19 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not msg:
         return
 
+    logger.info("Broadcast started")
+
     for u in users.find({}, {"chat_id": 1}):
         try:
             await context.bot.send_message(u["chat_id"], msg)
         except Forbidden:
             users.delete_one({"chat_id": u["chat_id"]})
-        except:
-            pass
+        except Exception as e:
+            logger.warning("Broadcast error: %s", e)
 
     await update.message.reply_text("📢 Broadcast sent")
 
-# ================= CHAT HANDLER (NO FLOOD) =================
+# ================= CHAT HANDLER =================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
@@ -253,10 +282,39 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Forbidden:
         users.delete_one({"chat_id": update.effective_chat.id})
 
+# ================= GLOBAL ERROR HANDLER =================
+
+async def error_handler(update, context):
+    err = context.error
+
+    if isinstance(err, TimedOut):
+        logger.warning("Telegram timeout – skipped")
+        return
+
+    if isinstance(err, NetworkError):
+        logger.warning("Telegram network error: %s", err)
+        return
+
+    logger.error("Unhandled error", exc_info=err)
+
 # ================= MAIN =================
 
 def main():
-    application = ApplicationBuilder().token(BOT_TOKEN).build()
+    logger.info("Starting Mitsuri bot...")
+
+    request = HTTPXRequest(
+        connect_timeout=20,
+        read_timeout=20,
+        write_timeout=20,
+        pool_timeout=20,
+    )
+
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .request(request)
+        .build()
+    )
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_cmd))
@@ -265,7 +323,9 @@ def main():
     application.add_handler(CommandHandler("cast", cast))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    print("🌸 Mitsuri is running...")
+    application.add_error_handler(error_handler)
+
+    logger.info("🌸 Mitsuri is running...")
     application.run_polling()
 
 if __name__ == "__main__":
