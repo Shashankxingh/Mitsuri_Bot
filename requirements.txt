@@ -1,8 +1,9 @@
-openai 
-groq 
-pymongo 
-python-telegram-bot 
-flask 
-python-dotenv 
-pytz 
+openai
+groq
+pymongo
+python-telegram-bot
+flask
+python-dotenv
+pytz
 duckduckgo-search
+gunicorn
