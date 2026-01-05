@@ -1,7 +1,8 @@
-python-telegram-bot==20.7
-python-dotenv
-pymongo
-groq
-cerebras-cloud-sdk
-sambanova
-flask
+openai 
+groq 
+pymongo 
+python-telegram-bot 
+flask 
+python-dotenv 
+pytz 
+duckduckgo-search
