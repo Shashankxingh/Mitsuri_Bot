@@ -10,12 +10,13 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
+from telegram.error import Forbidden
 
 from groq import AsyncGroq
 from cerebras.cloud.sdk import Cerebras
 from sambanova import SambaNova
 
-# ================= BASIC CONFIG =================
+# ================= CONFIG =================
 
 load_dotenv()
 
@@ -25,7 +26,7 @@ MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = 8162412883
 ADMIN_GROUP_ID = -1002759296936
 
-# ================= AI MODEL REGISTRY =================
+# ================= AI MODELS =================
 
 AI_MODELS = {
     "groq": [
@@ -166,6 +167,8 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for u in users.find({}, {"chat_id": 1}):
         try:
             await context.bot.send_message(u["chat_id"], msg)
+        except Forbidden:
+            users.delete_one({"chat_id": u["chat_id"]})
         except:
             pass
 
@@ -174,7 +177,12 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update)
     reply = await ask_ai(update.message.text)
-    await update.message.reply_text(reply)
+
+    try:
+        await update.message.reply_text(reply)
+    except Forbidden:
+        # Bot was kicked / removed
+        users.delete_one({"chat_id": update.effective_chat.id})
 
 # ================= MAIN =================
 
