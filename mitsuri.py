@@ -2,11 +2,7 @@ import os
 import asyncio
 from dotenv import load_dotenv
 from pymongo import MongoClient
-from telegram import (
-    Update,
-    InlineKeyboardButton,
-    InlineKeyboardMarkup,
-)
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -30,6 +26,16 @@ MONGO_URI = os.getenv("MONGO_URI")
 
 OWNER_ID = 8162412883
 ADMIN_GROUP_ID = -1002759296936
+
+# ================= SYSTEM PROMPT =================
+
+SYSTEM_PROMPT = (
+    "You are Mitsuri Kanroji from Demon Slayer. "
+    "Personality: warm, cheerful, romantic, sweet. "
+    "Use Hinglish (Hindi + English). "
+    "Keep replies short, cute, friendly. "
+    "Use emojis sparingly (🌸💖🍡)."
+)
 
 # ================= AI MODELS =================
 
@@ -76,33 +82,36 @@ sambanova = SambaNova(
 )
 
 async def ask_ai(prompt: str):
-    messages = [{"role": "user", "content": prompt}]
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": prompt},
+    ]
 
     if AI_PROVIDER == "groq":
-        res = await groq.chat.completions.create(
+        r = await groq.chat.completions.create(
             model=AI_MODEL,
             messages=messages,
             max_tokens=200,
         )
-        return res.choices[0].message.content
+        return r.choices[0].message.content
 
     if AI_PROVIDER == "cerebras":
-        res = await asyncio.to_thread(
+        r = await asyncio.to_thread(
             cerebras.chat.completions.create,
             model=AI_MODEL,
             messages=messages,
             max_tokens=200,
         )
-        return res.choices[0].message.content
+        return r.choices[0].message.content
 
     if AI_PROVIDER == "sambanova":
-        res = await asyncio.to_thread(
+        r = await asyncio.to_thread(
             sambanova.chat.completions.create,
             model=AI_MODEL,
             messages=messages,
             max_tokens=200,
         )
-        return res.choices[0].message.content
+        return r.choices[0].message.content
 
     return "AI error."
 
@@ -110,17 +119,17 @@ async def ask_ai(prompt: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     save_user(update)
-    await update.message.reply_text("🌸 Hi! I'm Mitsuri 💖")
+    await update.message.reply_text("🌸 Hii! Main Mitsuri hoon 💖")
 
 async def help_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
-        "/start – start bot\n"
+        "/start – start\n"
         "/help – help\n"
         "/ai – AI control (owner only)\n"
         "/cast – broadcast (owner only)"
     )
 
-# ================= /AI WITH BUTTONS =================
+# ================= /AI BUTTONS =================
 
 async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if (
@@ -129,57 +138,45 @@ async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ):
         return
 
-    keyboard = [
-        [InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")]
-        for p in AI_MODELS.keys()
-    ]
+    kb = [[InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")]
+          for p in AI_MODELS]
 
     await update.message.reply_text(
         "🧠 Select AI Provider:",
-        reply_markup=InlineKeyboardMarkup(keyboard),
+        reply_markup=InlineKeyboardMarkup(kb),
     )
 
-async def ai_button(update: Update, context: ContextTypes.DEFAULT_TYPE):
+async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global AI_PROVIDER, AI_MODEL
 
-    query = update.callback_query
-    await query.answer()
+    q = update.callback_query
+    await q.answer()
 
-    # 🔒 SECURITY CHECK
     if (
-        query.from_user.id != OWNER_ID
-        or query.message.chat.id != ADMIN_GROUP_ID
+        q.from_user.id != OWNER_ID
+        or q.message.chat.id != ADMIN_GROUP_ID
     ):
-        await query.answer("❌ Not allowed", show_alert=True)
         return
 
-    data = query.data
+    data = q.data
 
-    # Provider selection
     if data.startswith("prov:"):
-        provider = data.split(":")[1]
+        p = data.split(":")[1]
+        kb = [[InlineKeyboardButton(m, callback_data=f"model:{p}:{m}")]
+              for m in AI_MODELS[p]]
 
-        keyboard = [
-            [InlineKeyboardButton(m, callback_data=f"model:{provider}:{m}")]
-            for m in AI_MODELS[provider]
-        ]
-
-        await query.message.edit_text(
-            f"📦 Provider: {provider}\nChoose model:",
-            reply_markup=InlineKeyboardMarkup(keyboard),
+        await q.message.edit_text(
+            f"Provider: {p}\nChoose model:",
+            reply_markup=InlineKeyboardMarkup(kb),
         )
 
-    # Model selection
     elif data.startswith("model:"):
-        _, provider, model = data.split(":", 2)
+        _, p, m = data.split(":", 2)
+        AI_PROVIDER = p
+        AI_MODEL = m
 
-        AI_PROVIDER = provider
-        AI_MODEL = model
-
-        await query.message.edit_text(
-            f"✅ AI Updated!\n\n"
-            f"Provider: {AI_PROVIDER}\n"
-            f"Model: {AI_MODEL}"
+        await q.message.edit_text(
+            f"✅ AI Updated\n\nProvider: {p}\nModel: {m}"
         )
 
 # ================= BROADCAST =================
@@ -203,15 +200,15 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
         except:
             pass
 
-    await update.message.reply_text("📢 Broadcast sent!")
+    await update.message.reply_text("📢 Broadcast sent")
 
 # ================= CHAT HANDLER =================
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = update.message
-    chat_type = update.effective_chat.type
-    bot_username = context.bot.username.lower()
     text = msg.text.lower()
+    bot_username = context.bot.username.lower()
+    chat_type = update.effective_chat.type
 
     should_reply = False
 
@@ -222,17 +219,13 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
             should_reply = True
         elif f"@{bot_username}" in text:
             should_reply = True
-        elif (
-            msg.reply_to_message
-            and msg.reply_to_message.from_user.id == context.bot.id
-        ):
+        elif msg.reply_to_message and msg.reply_to_message.from_user.id == context.bot.id:
             should_reply = True
 
     if not should_reply:
         return
 
     save_user(update)
-
     reply = await ask_ai(msg.text)
 
     try:
@@ -248,7 +241,7 @@ def main():
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("help", help_cmd))
     app.add_handler(CommandHandler("ai", ai_cmd))
-    app.add_handler(CallbackQueryHandler(ai_button))
+    app.add_handler(CallbackQueryHandler(ai_buttons))
     app.add_handler(CommandHandler("cast", cast))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
