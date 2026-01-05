@@ -19,4 +19,4 @@ COPY . .
 # The Flask app inside your code will automatically listen to it.
 
 # 3. Start the bot (The script handles both the Bot and the Web Server)
-CMD ["python", "mitsuri_bot.py"]
+CMD ["python", "mitsuri.py"]
