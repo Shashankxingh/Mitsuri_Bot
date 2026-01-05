@@ -1,4 +1,6 @@
-python-telegram-bot==13.15
-pymongo==4.3.3
-python-dotenv==1.0.0
-openai==0.27.8
+python-telegram-bot==20.7
+python-dotenv
+pymongo
+groq
+cerebras-cloud-sdk
+sambanova
