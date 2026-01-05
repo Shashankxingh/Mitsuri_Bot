@@ -6,7 +6,7 @@ from datetime import datetime
 import pytz 
 
 # Search Tool
-from duckduckgo_search import DDGS
+from ddgs import DDGS
 
 from dotenv import load_dotenv
 from flask import Flask
