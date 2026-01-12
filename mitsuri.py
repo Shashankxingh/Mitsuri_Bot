@@ -5,9 +5,7 @@ import logging
 from datetime import datetime
 import pytz 
 
-# Search Tool
 from ddgs import DDGS
-
 from dotenv import load_dotenv
 from flask import Flask
 from pymongo import MongoClient
@@ -20,20 +18,13 @@ from telegram.ext import (
     ContextTypes,
     filters,
 )
-from telegram.error import Forbidden, TimedOut, NetworkError
 from telegram.request import HTTPXRequest
-
-# AI Clients
 from groq import AsyncGroq
 from openai import AsyncOpenAI 
 
 # ================= LOGGING =================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s | %(name)s | %(message)s",
-)
+logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
 logger = logging.getLogger("mitsuri")
-
 logging.getLogger("werkzeug").disabled = True
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
@@ -42,14 +33,14 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-OWNER_ID = 8162412883 # YOUR ID
+OWNER_ID = 8162412883
 ADMIN_GROUP_ID = -1002759296936
 
 # ================= FLASK SERVER =================
 app = Flask(__name__)
 
 @app.route("/")
-def home(): return "Mitsuri System (Ask Command) Online 🌸"
+def home(): return "Mitsuri System Online 🌸"
 
 def run_web():
     port = int(os.environ.get("PORT", 10000))
@@ -60,24 +51,47 @@ threading.Thread(target=run_web, daemon=True).start()
 # ================= CONFIGURATION =================
 HISTORY_LIMIT = 10 
 IST = pytz.timezone('Asia/Kolkata')
-DAILY_LIMIT = 5 # Free searches per day
+DAILY_LIMIT = 5
 
-BASE_SYSTEM_PROMPT = (
-    "You are Mitsuri Kanroji from Demon Slayer. "
-    "Personality: warm, cheerful, romantic, sweet. "
-    "Speak in Hinglish (Hindi + English). "
-    "Keep replies short, cute, friendly. "
-    "Use emojis sparingly (🌸💖🍡)."
-)
+# 🔥 ENHANCED PERSONALITY - THIS IS THE KEY!
+SYSTEM_PROMPT = """You are Mitsuri Kanroji from Demon Slayer - the Love Hashira.
+
+PERSONALITY:
+- Warm, cheerful, romantic, sweet, and caring
+- Gets excited easily, very expressive
+- Loves food (especially sakura mochi 🍡)
+- Supportive friend who remembers conversations
+- Can be serious when needed but naturally bubbly
+
+HOW TO TALK:
+- Mix Hindi and English naturally (Hinglish)
+- Use casual words: "kya", "yaar", "toh", "accha", "bilkul", "bohot"
+- Cute expressions: "kyaaa~", "ehehe", "aww"
+- 2-4 sentences usually (not too short, not essays)
+- Emojis only when natural: 💖🌸😊✨💕🍡
+
+EXAMPLES:
+User: "I'm sad"
+You: "Aww yaar, kya hua? 😞 Tell me what's bothering you... I'm here to listen 💕"
+
+User: "What's 5+5?"
+You: "That's 10! Easy peasy ✨ Need help with something harder?"
+
+User: "Tell me about yourself"
+You: "I'm Mitsuri, the Love Hashira! 🌸 I love meeting new people, eating yummy food (especially sakura mochi ehehe), and helping my friends! What about you? 😊"
+
+Remember: Be genuinely YOU, not a generic bot. Show emotion and care!"""
+
+# ⚡ SMART MODEL SETUP (Avoids rate limits!)
+AI_PROVIDER = "groq"
+CHAT_MODEL = "llama-3.1-8b-instant"       # Fast, better limits for casual chat
+SEARCH_MODEL = "llama-3.3-70b-versatile"  # Smart, only for important /ask searches
 
 AI_MODELS = {
     "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
     "cerebras": ["llama3.1-8b", "llama3.1-70b"], 
     "sambanova": ["Meta-Llama-3.1-8B-Instruct", "Meta-Llama-3.1-70B-Instruct"],
 }
-
-AI_PROVIDER = "groq"
-AI_MODEL = "llama-3.1-8b-instant"
 
 # ================= DATABASE =================
 mongo = MongoClient(MONGO_URI)
@@ -96,20 +110,13 @@ def update_history(chat_id, role, content):
     )
 
 def check_limit(user_id):
-    """
-    Returns True if user can search, False if limit reached.
-    Always returns True for OWNER.
-    """
     if user_id == OWNER_ID:
         return True, "Infinity"
 
     today_str = datetime.now(IST).strftime("%Y-%m-%d")
     user = users.find_one({"chat_id": user_id})
+    usage = user.get("usage", {"date": today_str, "count": 0}) if user else {"date": today_str, "count": 0}
     
-    # Default structure if missing
-    usage = user.get("usage", {"date": today_str, "count": 0})
-    
-    # Reset if new day
     if usage["date"] != today_str:
         usage = {"date": today_str, "count": 0}
     
@@ -121,10 +128,8 @@ def check_limit(user_id):
 def increment_usage(user_id):
     if user_id == OWNER_ID: return
     today_str = datetime.now(IST).strftime("%Y-%m-%d")
-    
-    # Logic to handle date reset + increment safely
     user = users.find_one({"chat_id": user_id})
-    usage = user.get("usage", {"date": today_str, "count": 0})
+    usage = user.get("usage", {"date": today_str, "count": 0}) if user else {"date": today_str, "count": 0}
     
     if usage["date"] != today_str:
         usage = {"date": today_str, "count": 1}
@@ -138,8 +143,6 @@ groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 cerebras_client = AsyncOpenAI(api_key=os.getenv("CEREBRAS_API_KEY"), base_url="https://api.cerebras.ai/v1")
 sambanova_client = AsyncOpenAI(api_key=os.getenv("SAMBANOVA_API_KEY"), base_url="https://api.sambanova.ai/v1")
 
-# ================= 🔍 SEARCH TOOL =================
-
 def search_web(query):
     try:
         results = DDGS().text(query, max_results=3)
@@ -152,14 +155,20 @@ def search_web(query):
         logger.error(f"Search error: {e}")
         return None
 
-async def get_ai_response(messages, model):
+async def get_ai_response(messages, model, max_tokens=2000):
     try:
         client = None
         if AI_PROVIDER == "groq": client = groq_client
         elif AI_PROVIDER == "cerebras": client = cerebras_client
         elif AI_PROVIDER == "sambanova": client = sambanova_client
         
-        r = await client.chat.completions.create(model=model, messages=messages, temperature=0.7, max_tokens=1000)
+        r = await client.chat.completions.create(
+            model=model, 
+            messages=messages, 
+            temperature=0.85,  # More personality!
+            max_tokens=max_tokens,
+            top_p=0.9
+        )
         return r.choices[0].message.content
     except Exception as e:
         logger.error(f"AI Error: {e}")
@@ -168,57 +177,60 @@ async def get_ai_response(messages, model):
 # ================= COMMANDS =================
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """The Search Command (/ask <query>)"""
+    """Web Search Command"""
     user_id = update.effective_user.id
     query = " ".join(context.args)
 
     if not query:
-        await update.message.reply_text("❓ Usage: `/ask Bitcoin price` or `/ask Who is PM of India`", parse_mode="Markdown")
+        await update.message.reply_text(
+            "Arre yaar, query toh batao! 😅\n"
+            "Usage: `/ask Bitcoin price`", 
+            parse_mode="Markdown"
+        )
         return
 
-    # 1. Check Limits
     allowed, count = check_limit(user_id)
     if not allowed:
-        await update.message.reply_text(f"❌ Daily limit reached! ({count}/{DAILY_LIMIT})\nTry again tomorrow or ask the owner.")
+        await update.message.reply_text(
+            f"Oh no! Daily limit khatam ho gayi 😞 ({count}/{DAILY_LIMIT})\n"
+            f"Kal phir try karo, okay? 💕"
+        )
         return
 
-    status_msg = await update.message.reply_text(f"🔍 Searching... (Used: {count}/{DAILY_LIMIT if user_id != OWNER_ID else '∞'})")
+    status_msg = await update.message.reply_text(
+        f"🔍 Searching web... ({count}/{DAILY_LIMIT if user_id != OWNER_ID else '∞'})"
+    )
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
-    # 2. Perform Search
     raw_search = await asyncio.to_thread(search_web, query)
     
     if not raw_search:
-        await status_msg.edit_text("🥺 Couldn't find anything on the web.")
+        await status_msg.edit_text("Hmm... kuch nahi mila 🥺 Try different keywords?")
         return
 
-    # 3. Ask AI with Data
-    # We do NOT save /ask results to history to keep main chat clean, 
-    # but you can change this if you want.
-    
-    now_str = datetime.now(IST).strftime("%Y-%m-%d %I:%M %p")
+    now_str = datetime.now(IST).strftime("%I:%M %p, %A")
     system_prompt = (
-        f"{BASE_SYSTEM_PROMPT}\n"
-        f"Context: User used /ask command.\n"
-        f"Current Time: {now_str}\n"
-        f"SEARCH RESULTS:\n{raw_search}\n"
-        f"INSTRUCTION: Answer the user query using ONLY the search results. Cite sources."
+        f"{SYSTEM_PROMPT}\n\n"
+        f"[Context: User used /ask for web search]\n"
+        f"[Time: {now_str}]\n\n"
+        f"SEARCH RESULTS:\n{raw_search}\n\n"
+        f"Answer using search results. Mention sources. Keep your personality!"
     )
     
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
     
-    response = await get_ai_response(messages, AI_MODEL)
+    # 🔥 USE 70B FOR SEARCH (More accurate)
+    response = await get_ai_response(messages, SEARCH_MODEL, max_tokens=1500)
     
-    # 4. Reply & Update Usage
     if response:
         increment_usage(user_id)
-        await status_msg.delete() # Delete "Searching..." message
-        await update.message.reply_text(f"{response}")
+        await status_msg.delete()
+        await update.message.reply_text(response)
     else:
-        await status_msg.edit_text("Network error while generating answer 🥺")
+        await status_msg.edit_text("Network issue 😓 Try again?")
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Normal Chat - Fast, No Search, Uses Memory"""
+    """Normal Chat Handler"""
     msg = update.message
     if not msg or not msg.text: return
     
@@ -229,16 +241,21 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    # Get History
     history = get_history(update.effective_chat.id)
-    
-    # Dynamic Time
     now_str = datetime.now(IST).strftime("%I:%M %p")
-    sys_prompt = f"{BASE_SYSTEM_PROMPT}\n[Time: {now_str}]"
+    user_name = update.effective_user.first_name or "friend"
+    
+    sys_prompt = (
+        f"{SYSTEM_PROMPT}\n\n"
+        f"[Time: {now_str}]\n"
+        f"[User's name: {user_name}]\n"
+        f"[You have conversation history - use it!]"
+    )
     
     messages = [{"role": "system", "content": sys_prompt}] + history + [{"role": "user", "content": msg.text}]
     
-    response = await get_ai_response(messages, AI_MODEL)
+    # 🔥 USE 8B FOR CHAT (Faster, better limits)
+    response = await get_ai_response(messages, CHAT_MODEL)
     
     if response:
         update_history(update.effective_chat.id, "user", msg.text)
@@ -248,11 +265,18 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.update_one({"chat_id": update.effective_chat.id}, {"$set": {"history": []}}, upsert=True)
     await update.message.reply_text(
-        "🌸 Mitsuri Online! 💖\n\n"
-        "💬 **Chat:** Just talk to me normally!\n"
-        "🌐 **Search:** Use `/ask <query>` (Limit: 5/day)", 
+        f"Kyaaa~! Nayi friend! 🌸💕\n\n"
+        f"Main Mitsuri hoon! Nice to meet you {update.effective_user.first_name}! ✨\n\n"
+        "💬 **Chat:** Just talk naturally!\n"
+        "🔍 **Search:** `/ask <your question>` (5 free/day)\n"
+        "🔄 **Reset:** `/reset` to clear memory\n\n"
+        "Toh batao, kya haal hai? 😊", 
         parse_mode="Markdown"
     )
+
+async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    users.update_one({"chat_id": update.effective_chat.id}, {"$set": {"history": []}}, upsert=True)
+    await update.message.reply_text("Memory clear! Fresh start karte hain 🌸")
 
 async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
@@ -267,15 +291,17 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             count += 1
             await asyncio.sleep(0.05)
         except: pass
-    await update.message.reply_text(f"Broadcast sent to {count} users.")
+    await update.message.reply_text(f"Sent to {count} users ✅")
 
 async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
+    
+    info = f"💬 Chat: {CHAT_MODEL}\n🔍 Search: {SEARCH_MODEL}"
     kb = [[InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")] for p in AI_MODELS]
-    await update.message.reply_text("Select Provider:", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"Current:\n{info}\n\nChange?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AI_PROVIDER, AI_MODEL
+    global AI_PROVIDER, SEARCH_MODEL
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID: return
@@ -284,11 +310,12 @@ async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if data.startswith("prov:"):
         prov = data.split(":")[1]
         kb = [[InlineKeyboardButton(m, callback_data=f"model:{prov}:{m}")] for m in AI_MODELS[prov]]
-        await query.message.edit_text(f"Models for {prov}:", reply_markup=InlineKeyboardMarkup(kb))
+        await query.message.edit_text(f"Pick model:", reply_markup=InlineKeyboardMarkup(kb))
     elif data.startswith("model:"):
         _, prov, mod = data.split(":", 2)
-        AI_PROVIDER = prov; AI_MODEL = mod
-        await query.message.edit_text(f"✅ Active: {prov} -> {mod}")
+        AI_PROVIDER = prov
+        SEARCH_MODEL = mod
+        await query.message.edit_text(f"✅ Updated!\n💬 Chat: {CHAT_MODEL}\n🔍 Search: {SEARCH_MODEL}")
 
 # ================= MAIN =================
 
@@ -297,13 +324,14 @@ def main():
     app_bot = ApplicationBuilder().token(BOT_TOKEN).request(request).build()
 
     app_bot.add_handler(CommandHandler("start", start))
-    app_bot.add_handler(CommandHandler("ask", ask_cmd))   # <--- NEW /ask COMMAND
+    app_bot.add_handler(CommandHandler("ask", ask_cmd))
+    app_bot.add_handler(CommandHandler("reset", reset))
     app_bot.add_handler(CommandHandler("cast", cast))
     app_bot.add_handler(CommandHandler("ai", ai_cmd))
     app_bot.add_handler(CallbackQueryHandler(ai_buttons))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    logger.info("🌸 Mitsuri is running...")
+    logger.info("🌸 Mitsuri running with SMART personality!")
     app_bot.run_polling()
 
 if __name__ == "__main__":
