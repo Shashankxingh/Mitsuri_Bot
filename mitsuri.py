@@ -20,7 +20,7 @@ from telegram.ext import (
 )
 from telegram.request import HTTPXRequest
 from groq import AsyncGroq
-from openai import AsyncOpenAI 
+import google.generativeai as genai
 
 # ================= LOGGING =================
 logging.basicConfig(level=logging.INFO, format="%(asctime)s | %(name)s | %(message)s")
@@ -35,6 +35,9 @@ BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
 OWNER_ID = 8162412883
 ADMIN_GROUP_ID = -1002759296936
+
+# Configure Gemini
+genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
 
 # ================= FLASK SERVER =================
 app = Flask(__name__)
@@ -53,7 +56,6 @@ HISTORY_LIMIT = 10
 IST = pytz.timezone('Asia/Kolkata')
 DAILY_LIMIT = 5
 
-# 🔥 ENHANCED PERSONALITY - THIS IS THE KEY!
 SYSTEM_PROMPT = """You are Mitsuri Kanroji from Demon Slayer - the Love Hashira.
 
 PERSONALITY:
@@ -77,20 +79,16 @@ You: "Aww yaar, kya hua? 😞 Tell me what's bothering you... I'm here to listen
 User: "What's 5+5?"
 You: "That's 10! Easy peasy ✨ Need help with something harder?"
 
-User: "Tell me about yourself"
-You: "I'm Mitsuri, the Love Hashira! 🌸 I love meeting new people, eating yummy food (especially sakura mochi ehehe), and helping my friends! What about you? 😊"
-
 Remember: Be genuinely YOU, not a generic bot. Show emotion and care!"""
 
-# ⚡ SMART MODEL SETUP (Avoids rate limits!)
-AI_PROVIDER = "groq"
-CHAT_MODEL = "llama-3.1-8b-instant"       # Fast, better limits for casual chat
-SEARCH_MODEL = "llama-3.3-70b-versatile"  # Smart, only for important /ask searches
+# ⚡ UPDATED AI PROVIDERS (Groq + Gemini)
+AI_PROVIDER = "groq" # Default
+CHAT_MODEL = "llama-3.1-8b-instant"
+SEARCH_MODEL = "llama-3.3-70b-versatile"
 
 AI_MODELS = {
     "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-    "cerebras": ["llama3.1-8b", "llama3.1-70b"], 
-    "sambanova": ["Meta-Llama-3.1-8B-Instruct", "Meta-Llama-3.1-70B-Instruct"],
+    "gemini": ["gemini-2.0-flash", "gemini-1.5-flash"],
 }
 
 # ================= DATABASE =================
@@ -140,8 +138,6 @@ def increment_usage(user_id):
 
 # ================= AI CLIENTS =================
 groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-cerebras_client = AsyncOpenAI(api_key=os.getenv("CEREBRAS_API_KEY"), base_url="https://api.cerebras.ai/v1")
-sambanova_client = AsyncOpenAI(api_key=os.getenv("SAMBANOVA_API_KEY"), base_url="https://api.sambanova.ai/v1")
 
 def search_web(query):
     try:
@@ -157,21 +153,47 @@ def search_web(query):
 
 async def get_ai_response(messages, model, max_tokens=2000):
     try:
-        client = None
-        if AI_PROVIDER == "groq": client = groq_client
-        elif AI_PROVIDER == "cerebras": client = cerebras_client
-        elif AI_PROVIDER == "sambanova": client = sambanova_client
-        
-        r = await client.chat.completions.create(
-            model=model, 
-            messages=messages, 
-            temperature=0.85,  # More personality!
-            max_tokens=max_tokens,
-            top_p=0.9
-        )
-        return r.choices[0].message.content
+        # --- GROQ HANDLER ---
+        if AI_PROVIDER == "groq":
+            r = await groq_client.chat.completions.create(
+                model=model, 
+                messages=messages, 
+                temperature=0.85,
+                max_tokens=max_tokens,
+                top_p=0.9
+            )
+            return r.choices[0].message.content
+
+        # --- GEMINI HANDLER ---
+        elif AI_PROVIDER == "gemini":
+            # 1. Extract System Prompt
+            system_instruction = next((msg["content"] for msg in messages if msg["role"] == "system"), None)
+            
+            # 2. Configure Model
+            gen_model = genai.GenerativeModel(
+                model_name=model,
+                system_instruction=system_instruction
+            )
+
+            # 3. Format History (Gemini uses 'user' and 'model' roles)
+            chat_history = []
+            last_msg = messages[-1]["content"] # The current prompt
+
+            for msg in messages:
+                if msg["role"] == "system": continue # Handled above
+                if msg == messages[-1]: continue     # Skip current msg, handled in send_message
+                
+                # Map roles: 'assistant' -> 'model', 'user' -> 'user'
+                role = "model" if msg["role"] == "assistant" else "user"
+                chat_history.append({"role": role, "parts": [msg["content"]]})
+
+            # 4. Generate
+            chat = gen_model.start_chat(history=chat_history)
+            response = await chat.send_message_async(last_msg)
+            return response.text
+
     except Exception as e:
-        logger.error(f"AI Error: {e}")
+        logger.error(f"AI Error ({AI_PROVIDER}): {e}")
         return None
 
 # ================= COMMANDS =================
@@ -182,30 +204,21 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = " ".join(context.args)
 
     if not query:
-        await update.message.reply_text(
-            "Arre yaar, query toh batao! 😅\n"
-            "Usage: `/ask Bitcoin price`", 
-            parse_mode="Markdown"
-        )
+        await update.message.reply_text("Arre yaar, query toh batao! 😅", parse_mode="Markdown")
         return
 
     allowed, count = check_limit(user_id)
     if not allowed:
-        await update.message.reply_text(
-            f"Oh no! Daily limit khatam ho gayi 😞 ({count}/{DAILY_LIMIT})\n"
-            f"Kal phir try karo, okay? 💕"
-        )
+        await update.message.reply_text(f"Daily limit khatam! 😞 ({count}/{DAILY_LIMIT})")
         return
 
-    status_msg = await update.message.reply_text(
-        f"🔍 Searching web... ({count}/{DAILY_LIMIT if user_id != OWNER_ID else '∞'})"
-    )
+    status_msg = await update.message.reply_text(f"🔍 Searching web... ({count}/{DAILY_LIMIT if user_id != OWNER_ID else '∞'})")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     raw_search = await asyncio.to_thread(search_web, query)
     
     if not raw_search:
-        await status_msg.edit_text("Hmm... kuch nahi mila 🥺 Try different keywords?")
+        await status_msg.edit_text("Hmm... kuch nahi mila 🥺")
         return
 
     now_str = datetime.now(IST).strftime("%I:%M %p, %A")
@@ -219,7 +232,7 @@ async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
     
-    # 🔥 USE 70B FOR SEARCH (More accurate)
+    # Use Search Model
     response = await get_ai_response(messages, SEARCH_MODEL, max_tokens=1500)
     
     if response:
@@ -254,7 +267,6 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     messages = [{"role": "system", "content": sys_prompt}] + history + [{"role": "user", "content": msg.text}]
     
-    # 🔥 USE 8B FOR CHAT (Faster, better limits)
     response = await get_ai_response(messages, CHAT_MODEL)
     
     if response:
@@ -296,12 +308,12 @@ async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != OWNER_ID: return
     
-    info = f"💬 Chat: {CHAT_MODEL}\n🔍 Search: {SEARCH_MODEL}"
+    info = f"⚡ Provider: {AI_PROVIDER}\n💬 Chat: {CHAT_MODEL}\n🔍 Search: {SEARCH_MODEL}"
     kb = [[InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")] for p in AI_MODELS]
-    await update.message.reply_text(f"Current:\n{info}\n\nChange?", reply_markup=InlineKeyboardMarkup(kb))
+    await update.message.reply_text(f"Current Settings:\n{info}\n\nSwitch Provider?", reply_markup=InlineKeyboardMarkup(kb))
 
 async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AI_PROVIDER, SEARCH_MODEL
+    global AI_PROVIDER, SEARCH_MODEL, CHAT_MODEL
     query = update.callback_query
     await query.answer()
     if query.from_user.id != OWNER_ID: return
@@ -309,13 +321,19 @@ async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if data.startswith("prov:"):
         prov = data.split(":")[1]
-        kb = [[InlineKeyboardButton(m, callback_data=f"model:{prov}:{m}")] for m in AI_MODELS[prov]]
-        await query.message.edit_text(f"Pick model:", reply_markup=InlineKeyboardMarkup(kb))
-    elif data.startswith("model:"):
-        _, prov, mod = data.split(":", 2)
         AI_PROVIDER = prov
-        SEARCH_MODEL = mod
-        await query.message.edit_text(f"✅ Updated!\n💬 Chat: {CHAT_MODEL}\n🔍 Search: {SEARCH_MODEL}")
+        # Auto-set default models when switching provider
+        if prov == "groq":
+            CHAT_MODEL = "llama-3.1-8b-instant"
+            SEARCH_MODEL = "llama-3.3-70b-versatile"
+        elif prov == "gemini":
+            CHAT_MODEL = "gemini-2.0-flash"
+            SEARCH_MODEL = "gemini-2.0-flash"
+            
+        await query.message.edit_text(
+            f"✅ Switched to **{prov.upper()}**\nDefault models set.",
+            parse_mode="Markdown"
+        )
 
 # ================= MAIN =================
 
@@ -331,7 +349,7 @@ def main():
     app_bot.add_handler(CallbackQueryHandler(ai_buttons))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    logger.info("🌸 Mitsuri running with SMART personality!")
+    logger.info("🌸 Mitsuri running with GROQ + GEMINI!")
     app_bot.run_polling()
 
 if __name__ == "__main__":
