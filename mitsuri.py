@@ -41,7 +41,7 @@ groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
 
 # --- MODELS ---
 # Using 2.0 Flash as the identifier for the latest Flash preview
-GEMINI_MODEL = "gemini-2.0-flash" 
+GEMINI_MODEL = "gemini-3.0-flash" 
 GROQ_MODEL = "llama-3.1-8b-instant"
 
 # Global State
