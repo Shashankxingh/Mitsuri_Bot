@@ -33,11 +33,19 @@ load_dotenv()
 
 BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 MONGO_URI = os.getenv("MONGO_URI")
-OWNER_ID = 8162412883
-ADMIN_GROUP_ID = -1002759296936
+OWNER_ID = 8162412883  # Replace with your ID
 
-# Configure Gemini
+# --- CONFIG AI CLIENTS ---
 genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
+
+# --- MODELS ---
+# Using 2.0 Flash as the identifier for the latest Flash preview
+GEMINI_MODEL = "gemini-2.0-flash" 
+GROQ_MODEL = "llama-3.1-8b-instant"
+
+# Global State
+CURRENT_PROVIDER = "gemini"  # Default to Gemini
 
 # ================= FLASK SERVER =================
 app = Flask(__name__)
@@ -54,7 +62,7 @@ threading.Thread(target=run_web, daemon=True).start()
 # ================= CONFIGURATION =================
 HISTORY_LIMIT = 10 
 IST = pytz.timezone('Asia/Kolkata')
-DAILY_LIMIT = 5
+DAILY_LIMIT = 1000 # Increased for Flash 3
 
 SYSTEM_PROMPT = """You are Mitsuri Kanroji from Demon Slayer - the Love Hashira.
 
@@ -72,24 +80,7 @@ HOW TO TALK:
 - 2-4 sentences usually (not too short, not essays)
 - Emojis only when natural: 💖🌸😊✨💕🍡
 
-EXAMPLES:
-User: "I'm sad"
-You: "Aww yaar, kya hua? 😞 Tell me what's bothering you... I'm here to listen 💕"
-
-User: "What's 5+5?"
-You: "That's 10! Easy peasy ✨ Need help with something harder?"
-
-Remember: Be genuinely YOU, not a generic bot. Show emotion and care!"""
-
-# ⚡ UPDATED AI PROVIDERS (Groq + Gemini)
-AI_PROVIDER = "groq" # Default
-CHAT_MODEL = "llama-3.1-8b-instant"
-SEARCH_MODEL = "llama-3.3-70b-versatile"
-
-AI_MODELS = {
-    "groq": ["llama-3.1-8b-instant", "llama-3.3-70b-versatile"],
-    "gemini": ["gemini-2.0-flash", "gemini-1.5-flash"],
-}
+Remember: Be genuinely YOU. Show emotion and care!"""
 
 # ================= DATABASE =================
 mongo = MongoClient(MONGO_URI)
@@ -108,19 +99,13 @@ def update_history(chat_id, role, content):
     )
 
 def check_limit(user_id):
-    if user_id == OWNER_ID:
-        return True, "Infinity"
-
+    if user_id == OWNER_ID: return True, "Infinity"
     today_str = datetime.now(IST).strftime("%Y-%m-%d")
     user = users.find_one({"chat_id": user_id})
     usage = user.get("usage", {"date": today_str, "count": 0}) if user else {"date": today_str, "count": 0}
     
-    if usage["date"] != today_str:
-        usage = {"date": today_str, "count": 0}
-    
-    if usage["count"] >= DAILY_LIMIT:
-        return False, usage["count"]
-    
+    if usage["date"] != today_str: usage = {"date": today_str, "count": 0}
+    if usage["count"] >= DAILY_LIMIT: return False, usage["count"]
     return True, usage["count"]
 
 def increment_usage(user_id):
@@ -129,121 +114,128 @@ def increment_usage(user_id):
     user = users.find_one({"chat_id": user_id})
     usage = user.get("usage", {"date": today_str, "count": 0}) if user else {"date": today_str, "count": 0}
     
-    if usage["date"] != today_str:
-        usage = {"date": today_str, "count": 1}
-    else:
-        usage["count"] += 1
-        
+    if usage["date"] != today_str: usage = {"date": today_str, "count": 1}
+    else: usage["count"] += 1
     users.update_one({"chat_id": user_id}, {"$set": {"usage": usage}}, upsert=True)
 
-# ================= AI CLIENTS =================
-groq_client = AsyncGroq(api_key=os.getenv("GROQ_API_KEY"))
-
+# ================= SEARCH TOOL =================
 def search_web(query):
     try:
         results = DDGS().text(query, max_results=3)
         if not results: return None
         formatted = ""
         for i, r in enumerate(results, 1):
-            formatted += f"[{i}] {r['title']}\nSnippet: {r['body']}\nLink: {r['href']}\n\n"
+            formatted += f"[{i}] {r['title']}\nSnippet: {r['body']}\n\n"
         return formatted
     except Exception as e:
         logger.error(f"Search error: {e}")
         return None
 
-async def get_ai_response(messages, model, max_tokens=2000):
-    try:
-        # --- GROQ HANDLER ---
-        if AI_PROVIDER == "groq":
+# ================= AI GENERATION =================
+
+async def generate_response(messages, provider=None):
+    """
+    Routes to the correct AI based on 'provider' arg or global CURRENT_PROVIDER.
+    No auto-fallback.
+    """
+    target = provider if provider else CURRENT_PROVIDER
+    
+    # 1. GEMINI HANDLER
+    if target == "gemini":
+        try:
+            # Separate System Prompt
+            sys_content = next((msg["content"] for msg in messages if msg["role"] == "system"), "")
+            
+            # Format History
+            gemini_hist = []
+            user_msgs = [msg for msg in messages if msg["role"] != "system"]
+            last_msg = user_msgs[-1]["content"] if user_msgs else ""
+            
+            for msg in user_msgs[:-1]:
+                role = "model" if msg["role"] == "assistant" else "user"
+                gemini_hist.append({"role": role, "parts": [msg["content"]]})
+
+            model = genai.GenerativeModel(
+                model_name=GEMINI_MODEL,
+                system_instruction=sys_content
+            )
+            chat = model.start_chat(history=gemini_hist)
+            response = await chat.send_message_async(last_msg)
+            return response.text
+        except Exception as e:
+            logger.error(f"Gemini Error: {e}")
+            return f"⚠️ Gemini Error: {str(e)}"
+
+    # 2. GROQ HANDLER
+    elif target == "groq":
+        try:
             r = await groq_client.chat.completions.create(
-                model=model, 
+                model=GROQ_MODEL, 
                 messages=messages, 
                 temperature=0.85,
-                max_tokens=max_tokens,
+                max_tokens=1024,
                 top_p=0.9
             )
             return r.choices[0].message.content
-
-        # --- GEMINI HANDLER ---
-        elif AI_PROVIDER == "gemini":
-            # 1. Extract System Prompt
-            system_instruction = next((msg["content"] for msg in messages if msg["role"] == "system"), None)
-            
-            # 2. Configure Model
-            gen_model = genai.GenerativeModel(
-                model_name=model,
-                system_instruction=system_instruction
-            )
-
-            # 3. Format History (Gemini uses 'user' and 'model' roles)
-            chat_history = []
-            last_msg = messages[-1]["content"] # The current prompt
-
-            for msg in messages:
-                if msg["role"] == "system": continue # Handled above
-                if msg == messages[-1]: continue     # Skip current msg, handled in send_message
-                
-                # Map roles: 'assistant' -> 'model', 'user' -> 'user'
-                role = "model" if msg["role"] == "assistant" else "user"
-                chat_history.append({"role": role, "parts": [msg["content"]]})
-
-            # 4. Generate
-            chat = gen_model.start_chat(history=chat_history)
-            response = await chat.send_message_async(last_msg)
-            return response.text
-
-    except Exception as e:
-        logger.error(f"AI Error ({AI_PROVIDER}): {e}")
-        return None
+        except Exception as e:
+            logger.error(f"Groq Error: {e}")
+            return f"⚠️ Groq Error: {str(e)}"
 
 # ================= COMMANDS =================
 
 async def ask_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Web Search Command"""
+    """Web Search - Uses Global Provider"""
     user_id = update.effective_user.id
     query = " ".join(context.args)
 
     if not query:
-        await update.message.reply_text("Arre yaar, query toh batao! 😅", parse_mode="Markdown")
+        await update.message.reply_text("Usage: `/ask <query>`", parse_mode="Markdown")
         return
 
     allowed, count = check_limit(user_id)
     if not allowed:
-        await update.message.reply_text(f"Daily limit khatam! 😞 ({count}/{DAILY_LIMIT})")
+        await update.message.reply_text(f"Daily limit reached ({count}/{DAILY_LIMIT})")
         return
 
-    status_msg = await update.message.reply_text(f"🔍 Searching web... ({count}/{DAILY_LIMIT if user_id != OWNER_ID else '∞'})")
+    status_msg = await update.message.reply_text(f"🔍 Searching via **{CURRENT_PROVIDER.title()}**...")
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     raw_search = await asyncio.to_thread(search_web, query)
-    
     if not raw_search:
-        await status_msg.edit_text("Hmm... kuch nahi mila 🥺")
+        await status_msg.edit_text("No results found 🥺")
         return
 
     now_str = datetime.now(IST).strftime("%I:%M %p, %A")
-    system_prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"[Context: User used /ask for web search]\n"
-        f"[Time: {now_str}]\n\n"
-        f"SEARCH RESULTS:\n{raw_search}\n\n"
-        f"Answer using search results. Mention sources. Keep your personality!"
-    )
+    full_prompt = [
+        {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n[Context: Search]\n[Time: {now_str}]\n\nRESULTS:\n{raw_search}"},
+        {"role": "user", "content": query}
+    ]
     
-    messages = [{"role": "system", "content": system_prompt}, {"role": "user", "content": query}]
+    response = await generate_response(full_prompt) # Uses global provider
     
-    # Use Search Model
-    response = await get_ai_response(messages, SEARCH_MODEL, max_tokens=1500)
+    increment_usage(user_id)
+    await status_msg.delete()
+    await update.message.reply_text(response)
+
+async def groq_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Manual One-off Groq Call"""
+    msg = " ".join(context.args)
+    if not msg:
+        await update.message.reply_text("Usage: `/groq <message>`", parse_mode="Markdown")
+        return
+        
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     
-    if response:
-        increment_usage(user_id)
-        await status_msg.delete()
-        await update.message.reply_text(response)
-    else:
-        await status_msg.edit_text("Network issue 😓 Try again?")
+    # Simple stateless call
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": msg}
+    ]
+    
+    response = await generate_response(messages, provider="groq")
+    await update.message.reply_text(f"🦖 **Groq:**\n{response}", parse_mode="Markdown")
 
 async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Normal Chat Handler"""
     msg = update.message
     if not msg or not msg.text: return
     
@@ -258,82 +250,64 @@ async def chat(update: Update, context: ContextTypes.DEFAULT_TYPE):
     now_str = datetime.now(IST).strftime("%I:%M %p")
     user_name = update.effective_user.first_name or "friend"
     
-    sys_prompt = (
-        f"{SYSTEM_PROMPT}\n\n"
-        f"[Time: {now_str}]\n"
-        f"[User's name: {user_name}]\n"
-        f"[You have conversation history - use it!]"
-    )
+    sys_msg = {"role": "system", "content": f"{SYSTEM_PROMPT}\n\n[Time: {now_str}]\n[User: {user_name}]"}
+    messages = [sys_msg] + history + [{"role": "user", "content": msg.text}]
     
-    messages = [{"role": "system", "content": sys_prompt}] + history + [{"role": "user", "content": msg.text}]
+    # Uses Global Provider (Default Gemini)
+    response = await generate_response(messages)
     
-    response = await get_ai_response(messages, CHAT_MODEL)
-    
-    if response:
+    if response and "⚠️" not in response:
         update_history(update.effective_chat.id, "user", msg.text)
         update_history(update.effective_chat.id, "assistant", response)
         await msg.reply_text(response)
+    else:
+        # If error, send it but don't save to history
+        await msg.reply_text(response)
+
+# --- CONTROL PANEL ---
+
+async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if update.effective_user.id != OWNER_ID: return
+    
+    kb = [
+        [InlineKeyboardButton("💎 Switch to Gemini", callback_data="set:gemini")],
+        [InlineKeyboardButton("🦖 Switch to Groq", callback_data="set:groq")]
+    ]
+    await update.message.reply_text(
+        f"**Current Engine:** {CURRENT_PROVIDER.upper()}\n"
+        f"Gemini Model: `{GEMINI_MODEL}`\n"
+        f"Groq Model: `{GROQ_MODEL}`",
+        reply_markup=InlineKeyboardMarkup(kb),
+        parse_mode="Markdown"
+    )
+
+async def ai_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global CURRENT_PROVIDER
+    query = update.callback_query
+    await query.answer()
+    
+    if query.from_user.id != OWNER_ID: return
+    
+    data = query.data
+    if data.startswith("set:"):
+        new_prov = data.split(":")[1]
+        CURRENT_PROVIDER = new_prov
+        await query.message.edit_text(f"✅ **System Switched to: {new_prov.upper()}**")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.update_one({"chat_id": update.effective_chat.id}, {"$set": {"history": []}}, upsert=True)
     await update.message.reply_text(
-        f"Kyaaa~! Nayi friend! 🌸💕\n\n"
-        f"Main Mitsuri hoon! Nice to meet you {update.effective_user.first_name}! ✨\n\n"
-        "💬 **Chat:** Just talk naturally!\n"
-        "🔍 **Search:** `/ask <your question>` (5 free/day)\n"
-        "🔄 **Reset:** `/reset` to clear memory\n\n"
-        "Toh batao, kya haal hai? 😊", 
+        f"Kyaaa~! Hello {update.effective_user.first_name}! 🌸💕\n\n"
+        f"I'm running on **Gemini Flash 3** (Preview)! ✨\n\n"
+        "💬 Just chat with me normally!\n"
+        "🦖 Use `/groq <text>` for manual fallback\n"
+        "🔄 `/reset` to clear memory", 
         parse_mode="Markdown"
     )
 
 async def reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     users.update_one({"chat_id": update.effective_chat.id}, {"$set": {"history": []}}, upsert=True)
-    await update.message.reply_text("Memory clear! Fresh start karte hain 🌸")
-
-async def cast(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID: return
-    msg = " ".join(context.args)
-    if not msg: return
-    
-    users_list = users.find({}, {"chat_id": 1})
-    count = 0
-    for u in users_list:
-        try:
-            await context.bot.send_message(u["chat_id"], msg)
-            count += 1
-            await asyncio.sleep(0.05)
-        except: pass
-    await update.message.reply_text(f"Sent to {count} users ✅")
-
-async def ai_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id != OWNER_ID: return
-    
-    info = f"⚡ Provider: {AI_PROVIDER}\n💬 Chat: {CHAT_MODEL}\n🔍 Search: {SEARCH_MODEL}"
-    kb = [[InlineKeyboardButton(p.upper(), callback_data=f"prov:{p}")] for p in AI_MODELS]
-    await update.message.reply_text(f"Current Settings:\n{info}\n\nSwitch Provider?", reply_markup=InlineKeyboardMarkup(kb))
-
-async def ai_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global AI_PROVIDER, SEARCH_MODEL, CHAT_MODEL
-    query = update.callback_query
-    await query.answer()
-    if query.from_user.id != OWNER_ID: return
-    data = query.data
-    
-    if data.startswith("prov:"):
-        prov = data.split(":")[1]
-        AI_PROVIDER = prov
-        # Auto-set default models when switching provider
-        if prov == "groq":
-            CHAT_MODEL = "llama-3.1-8b-instant"
-            SEARCH_MODEL = "llama-3.3-70b-versatile"
-        elif prov == "gemini":
-            CHAT_MODEL = "gemini-2.0-flash"
-            SEARCH_MODEL = "gemini-2.0-flash"
-            
-        await query.message.edit_text(
-            f"✅ Switched to **{prov.upper()}**\nDefault models set.",
-            parse_mode="Markdown"
-        )
+    await update.message.reply_text("Memory clear! Fresh start 🌸")
 
 # ================= MAIN =================
 
@@ -344,12 +318,12 @@ def main():
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(CommandHandler("ask", ask_cmd))
     app_bot.add_handler(CommandHandler("reset", reset))
-    app_bot.add_handler(CommandHandler("cast", cast))
-    app_bot.add_handler(CommandHandler("ai", ai_cmd))
-    app_bot.add_handler(CallbackQueryHandler(ai_buttons))
+    app_bot.add_handler(CommandHandler("groq", groq_cmd)) # Manual Groq Command
+    app_bot.add_handler(CommandHandler("ai", ai_cmd))     # Switcher
+    app_bot.add_handler(CallbackQueryHandler(ai_callback))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, chat))
 
-    logger.info("🌸 Mitsuri running with GROQ + GEMINI!")
+    logger.info(f"🌸 Mitsuri Online | Default: {GEMINI_MODEL}")
     app_bot.run_polling()
 
 if __name__ == "__main__":
