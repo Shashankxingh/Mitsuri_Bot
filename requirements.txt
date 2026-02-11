@@ -1,9 +1,8 @@
-openai
-groq
-pymongo
 python-telegram-bot
 flask
+pymongo
 python-dotenv
-pytz
 ddgs
-gunicorn
+groq
+google-generativeai
+pytz
